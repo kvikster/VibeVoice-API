@@ -86,15 +86,16 @@ LiveKit, LLM, and TTS endpoints its configuration names. The agent's
 
 Fresh Voice Focus VAD scores, score age, and prediction delay appear in each
 `/bargein` decision log when `GATEWAY_AIC_VAD_ENABLED=1` and a matching
-`/stt` stream is active. The gateway uses the foreground VAD as a **gate**:
-a fresh score below 0.2 holds the floor even if short overlap ASR recognized
-words. Riva supplies the text needed to distinguish “stop” from “uh-huh”
-after the VAD gate; it is not the VAD. Set
-`GATEWAY_AIC_VAD_GATE_THRESHOLD=0` to disable the gate, or another value
-between 0 and 1 to tune it. The 0.2 default separates a local clean-speech
-sample from silence but is not calibrated on caller, background-only, and
-mixed calls. A false veto can suppress a real caller's “stop.” If VAD is
-unavailable or its score is stale, the classifier continues without a VAD veto.
+`/stt` stream is active. By default, these scores are **shadow evidence** and
+cannot veto an interruption. Riva supplies the text needed to distinguish
+“stop” from “uh-huh”; it is not the VAD. For a controlled experiment only,
+set `GATEWAY_AIC_VAD_GATE_THRESHOLD=0.2` to make a fresh score below that
+threshold hold the floor even if short overlap ASR recognized words. Unset the
+variable to return to shadow mode. The threshold is not calibrated on caller,
+background-only, and mixed calls: a false veto can suppress a real caller's
+“stop.” If VAD is unavailable or its score is stale, the classifier continues
+without a VAD veto. The offline staging-corpus check is documented in
+[the five-call report](evidence/stg-five-voice-focus-vad-2026-09-27.md).
 
 The `/bargein` message format is an undocumented LiveKit internal protocol.
 This checkout pins `livekit-agents==1.8.3`; its protocol contract is exercised
@@ -107,4 +108,4 @@ format, or policy. A local two-process smoke run with real Riva, licensed
 ai-coustics enhancement, and Voice Focus VAD returned a final transcript and
 speaker ID. That proves the components can run together. Recognition quality,
 interruption accuracy, and latency on the call corpus still need a paired run
-before deploying the default VAD gate to live calls.
+before enabling the experimental VAD gate for live calls.
