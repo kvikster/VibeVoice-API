@@ -6,6 +6,9 @@ says where an overlap starts, so we infer that from gaps between requests.
 
 Signals, all optional except the elapsed time:
 
+* ai-coustics Voice Focus VAD probability from the full caller audio stream.
+  When its gate is configured and a fresh score is low, background speech
+  cannot interrupt even if overlap ASR recognizes words.
 * transcript of the overlap part (NeMo-Speech.cpp offline Recognize) classified
   with the shared lexicon. Runs in the background; a decision never waits for it.
   ``OverlapState.asr_status`` tells whether text is pending, empty or failed.
@@ -14,15 +17,16 @@ Signals, all optional except the elapsed time:
 Decision rules, in order (``Decision.code`` in brackets):
 
 1. overlap shorter than ``min_overlap_s``           -> wait        [overlap_too_short]
-2. transcript has a barge-in word ("stop", "wait")   -> interrupt   [interrupt_token]
-3. transcript is only backchannel/continuer words    -> no          [backchannel_*, continuer_phrase]
+2. fresh Voice Focus VAD is below the foreground gate -> no         [voice_focus_vad_veto]
+3. transcript has a barge-in word ("stop", "wait")   -> interrupt   [interrupt_token]
+4. transcript is only backchannel/continuer words    -> no          [backchannel_*, continuer_phrase]
    transcript is the start of a known phrase ("do not", "i am"), overlap < ``single_word_s``
                                                      -> wait        [phrase_prefix_waiting]
-4. transcript has >= ``min_content_words`` words      -> interrupt   [content_words]
-5. one content word and MaAI says backchannel        -> no          [maai_backchannel]
-6. one content word, overlap >= ``single_word_s``    -> interrupt   [single_word_held]
+5. transcript has >= ``min_content_words`` words      -> interrupt   [content_words]
+6. one content word and MaAI says backchannel        -> no          [maai_backchannel]
+7. one content word, overlap >= ``single_word_s``    -> interrupt   [single_word_held]
    otherwise                                         -> wait        [single_word_waiting]
-7. no transcript engine: MaAI low and overlap >= ``no_asr_min_s``, or
+8. no transcript engine: MaAI low and overlap >= ``no_asr_min_s``, or
    overlap >= ``long_overlap_s``                     -> interrupt   [no_asr_maai_low, no_asr_long_overlap]
 
 Everything else (noise, coughs, laughter: no words) is not an interruption

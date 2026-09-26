@@ -21,6 +21,7 @@ from livekit.agents.inference.interruption import (
 
 from local_voice_agent.bargein_server import BargeinServer
 from local_voice_agent.bargein_server.aic_vad import AicVadHub
+from local_voice_agent.bargein_server.classifier import ClassifierConfig
 from local_voice_agent.bargein_server.transcriber import TranscriptResult
 
 KEY, SECRET = "devkey", "devsecret-devsecret-devsecret-00"
@@ -52,12 +53,12 @@ class ListLog:
 
 async def run_overlap(
     transcript: str, *, overlap_s: float, api_secret: str = SECRET, log=None,
-    vad_hub=None,
+    vad_hub=None, classifier_config=None,
 ):
     transcriber = FakeTranscriber(transcript)
     server = BargeinServer(
         api_key=KEY, api_secret=SECRET, transcriber=transcriber, decision_log=log,
-        vad_hub=vad_hub,
+        vad_hub=vad_hub, classifier_config=classifier_config,
     )
     async with TestServer(server.app()) as ts, aiohttp.ClientSession() as http:
         detector = AdaptiveInterruptionDetector(
@@ -151,4 +152,23 @@ async def test_gateway_voice_focus_vad_evidence_reaches_adaptive_decisions(monke
         and record["signals"]["voice_focus_vad"]["prediction_delay_samples"] == 320
         for record in log.records
     )
+    hub.close(lease)
+
+
+async def test_gateway_voice_focus_vad_gate_blocks_background_asr_word(monkeypatch):
+    from livekit.agents.inference import interruption
+
+    headers = {"X-LiveKit-Room-ID": "room-1", "X-LiveKit-Job-ID": "job-1"}
+    monkeypatch.setattr(interruption, "get_inference_headers", lambda: headers)
+    hub = AicVadHub(max_age_s=3.0)
+    lease = hub.start(headers)
+    hub.publish(lease, 0.02, 480)
+    log = ListLog()
+    events, errors, asr = await run_overlap(
+        "stop", overlap_s=0.8, log=log, vad_hub=hub,
+        classifier_config=ClassifierConfig(vf_vad_gate_threshold=0.2),
+    )
+    assert not errors and asr.calls
+    assert not any(event.is_interruption for event in events)
+    assert any(record["reason"] == "voice_focus_vad_veto" for record in log.records)
     hub.close(lease)

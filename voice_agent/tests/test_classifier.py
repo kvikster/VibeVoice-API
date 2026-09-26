@@ -84,7 +84,7 @@ def test_decision_codes_and_outcomes():
     assert (d.code, d.outcome, d.signals["interrupt_tokens"]) == ("interrupt_token", "interrupt", ["stop"])
 
 
-def test_voice_focus_vad_is_advisory_until_gate_is_explicit():
+def test_voice_focus_vad_gate_precedes_asr_when_configured():
     state, created = state_at(0.8, "stop")
     baseline = BargeinClassifier(has_asr=True, has_maai=False)
     decision = baseline.decide(state, created, None, vf_vad_p=0.02, vf_vad_delay_samples=320)
@@ -97,4 +97,5 @@ def test_voice_focus_vad_is_advisory_until_gate_is_explicit():
         ClassifierConfig(vf_vad_gate_threshold=0.2), has_asr=True, has_maai=False,
     )
     assert gated.decide(state, created, None, vf_vad_p=0.02).code == "voice_focus_vad_veto"
+    assert gated.decide(state, created, None, vf_vad_p=0.8).is_interruption
     assert gated.decide(state, created, None, vf_vad_p=None).is_interruption

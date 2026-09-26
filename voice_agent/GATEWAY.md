@@ -86,12 +86,15 @@ LiveKit, LLM, and TTS endpoints its configuration names. The agent's
 
 Fresh Voice Focus VAD scores, score age, and prediction delay appear in each
 `/bargein` decision log when `GATEWAY_AIC_VAD_ENABLED=1` and a matching
-`/stt` stream is active. By default they are **advisory**. To
-allow a low score to veto an interruption, set
-`GATEWAY_AIC_VAD_GATE_THRESHOLD` between 0 and 1 on the gateway. Calibrate
-that threshold on caller, background-only, and mixed speech before enabling
-it; a false veto can suppress a real caller's “stop.” If VAD becomes
-unavailable, the classifier continues without a VAD veto.
+`/stt` stream is active. The gateway uses the foreground VAD as a **gate**:
+a fresh score below 0.2 holds the floor even if short overlap ASR recognized
+words. Riva supplies the text needed to distinguish “stop” from “uh-huh”
+after the VAD gate; it is not the VAD. Set
+`GATEWAY_AIC_VAD_GATE_THRESHOLD=0` to disable the gate, or another value
+between 0 and 1 to tune it. The 0.2 default separates a local clean-speech
+sample from silence but is not calibrated on caller, background-only, and
+mixed calls. A false veto can suppress a real caller's “stop.” If VAD is
+unavailable or its score is stale, the classifier continues without a VAD veto.
 
 The `/bargein` message format is an undocumented LiveKit internal protocol.
 This checkout pins `livekit-agents==1.8.3`; its protocol contract is exercised
@@ -104,4 +107,4 @@ format, or policy. A local two-process smoke run with real Riva, licensed
 ai-coustics enhancement, and Voice Focus VAD returned a final transcript and
 speaker ID. That proves the components can run together. Recognition quality,
 interruption accuracy, and latency on the call corpus still need a paired run
-before enabling the optional VAD veto.
+before deploying the default VAD gate to live calls.

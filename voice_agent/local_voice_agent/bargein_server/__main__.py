@@ -38,7 +38,7 @@ def main() -> None:
         "--aic-vad-gate-threshold", type=float,
         default=float(os.environ["GATEWAY_AIC_VAD_GATE_THRESHOLD"])
         if os.environ.get("GATEWAY_AIC_VAD_GATE_THRESHOLD") else None,
-        help="opt-in VAD veto threshold; omit to record scores without affecting decisions",
+        help="foreground VAD gate (default 0.2 when --aic-vad is enabled; 0 disables it)",
     )
     p.add_argument("--maai-device", default=os.environ.get("MAAI_DEVICE", "cpu"))
     p.add_argument("--threshold", type=float, default=float(os.environ.get("BARGEIN_THRESHOLD", "0.5")))
@@ -72,6 +72,10 @@ def main() -> None:
         p.error("--aic-vad-gate-threshold requires --aic-vad")
     if args.aic_vad_gate_threshold is not None and not 0 <= args.aic_vad_gate_threshold <= 1:
         p.error("--aic-vad-gate-threshold must be between 0 and 1")
+    if args.aic_vad and args.aic_vad_gate_threshold is None:
+        # A low foreground score holds the floor even if background ASR hears words.
+        # Keep the threshold conservative until the call corpus calibrates it.
+        args.aic_vad_gate_threshold = 0.2
 
     from ..settings import Settings
 
