@@ -19,8 +19,8 @@ on Linux or with an x86-64 Linux Nix builder. The CPU build is a functional
 fallback but has not been benchmarked for live call latency. Intel macOS is
 not a supported flake system. Red Hat 9.2 compatibility must be confirmed
 with a build and smoke test on the target machine; evaluation on macOS alone
-is not an installation test. The `Nix gateway` workflow builds the Linux CPU
-package on x86-64 CI after changes to this branch.
+is not an installation test. The `Nix gateway` workflow builds and starts the
+Linux CPU package on x86-64 CI after changes to this branch.
 
 ## Build and install
 
