@@ -5,6 +5,9 @@
 залишаються лише на шлюзі, а агент передає туди аудіо через `/stt` і
 використовує `/bargein` для adaptive interruptions.
 
+Єдиний Nix flake для Nemotron, Sortformer та шлюзу на Apple Silicon macOS і
+RHEL 9.2 x86-64 описано в [NIX_PACKAGE.md](NIX_PACKAGE.md).
+
 Повністю локальний англомовний голосовий агент із відсіканням фонових мовців і
 двома варіантами обробки backchannel («uh-huh», «yeah» не перебивають агента).
 
@@ -35,7 +38,7 @@
 | Опція 1 всередині справжнього `AgentSession` 1.8.3 | 5 сценаріїв у тест-харнесі livekit/agents (`livekit_harness/run.sh`): без фільтра «Mhm.» перебиває агента, з фільтром — ні; «Stop!» і повне речення перебивають; шум без слів — ні |
 | Shadow у справжньому `AgentSession` | поведінка і таймінг станів ідентичні контрольному прогону без фільтра; журнал відтворюється в ті самі рішення |
 | Опція 2: справжній клієнт `AdaptiveInterruptionDetector` 1.8.3 ↔ наш сервер | unit-тести протоколу + 2 наскрізні сценарії в `AgentSession`: «mhm» не перебиває, «stop please» перебиває через ~0.35 с; сервер відповідає за < 1 мс |
-| `riva_server` на Mac (Metal + gRPC), реальні Nemotron/Sortformer | **не перевірено** — у середовищі розробки не було Mac/GPU і доступу до HuggingFace |
+| `riva_server` на Mac (Metal + gRPC), реальні Nemotron/Sortformer | Nix-пакет зібрано на Apple Silicon; gRPC конфігурація, реальне ASR на 9 слів, мітка мовця та `/stt` шлюзу пройшли smoke test. RHEL/CUDA ще потребує прогону на Linux-хості. Див. [NIX_PACKAGE.md](NIX_PACKAGE.md) |
 | MaAI з реальною моделлю | **не перевірено** (ваги з HuggingFace); перевірено лише обв'язку з фейковою моделлю |
 | ai-coustics: реальний плагін з неправильним ключем | перевірено: пропускає аудіо без змін і логує причину |
 | ai-coustics: `AicVAD`, VAD улучшувача, `vad_scores`, `replay_stt --enhance` | перевірено з фейковим `aic_sdk` і фейковим улучшувачем |
