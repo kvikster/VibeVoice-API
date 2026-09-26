@@ -106,6 +106,7 @@ async def test_aic_vad_runs_silero_state_machine_on_aic_probability(tmp_path, fa
     assert max(r["p_speech"] for r in inference) > 0.8 and min(r["p_speech"] for r in inference) < 0.1
     assert meta["vad"]["model"] == "ai-coustics fake-vad"
     assert meta["vad"]["options"]["min_silence_duration"] == 0.55
+    assert meta["vad"]["prediction_delay_samples"] == 0
     assert fake_aic_sdk == [("vad-2.1-xxs-16khz", str(tmp_path))]
     vad = FakeVad.instances[-1]
     assert vad.license_key == "test-key" and vad.otel_config.enable is False

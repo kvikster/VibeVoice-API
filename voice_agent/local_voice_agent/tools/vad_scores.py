@@ -102,6 +102,8 @@ async def score(
                 await asyncio.sleep(0)  # let the VAD task run
         stream.end_input()
         await collector
+        # ai-coustics VAD predictions lag the audio by this much; timestamps are not shifted
+        delay = getattr(getattr(stream, "_model", None), "prediction_delay_samples", None)
     finally:
         await stream.aclose()
         writer.close()
@@ -112,7 +114,8 @@ async def score(
         "wav": {"path": str(wav), "sha256": run_meta.sha256(wav), "sample_rate": rate,
                 "duration_s": round(len(audio) / rate, 4)},
         "vad": {"backend": settings.vad_backend, "model": vad.model, "provider": vad.provider,
-                "options": _vad_options(vad)},
+                "options": _vad_options(vad),
+                "prediction_delay_samples": delay},
         "enhancement": aic.enhancer_description(settings) if enhancer is not None else None,
         "counts": dict(counts),
         "versions": run_meta.versions() | _aic_versions(),
