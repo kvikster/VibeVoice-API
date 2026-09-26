@@ -56,3 +56,28 @@ def test_fallbacks_without_asr():
     c = BargeinClassifier(has_asr=False, has_maai=False)
     assert not c.decide(*state_at(1.0, None), None).is_interruption
     assert c.decide(*state_at(2.5, None), None).is_interruption
+
+
+def test_asr_state_is_explained():
+    c = BargeinClassifier(has_asr=True, has_maai=False)
+    cases = [("pending", "asr_pending"), ("empty", "asr_empty"), ("error", "asr_error"), ("timeout", "asr_timeout")]
+    for status, code in cases:
+        st, created = state_at(0.8)
+        st.asr_status = status
+        d = c.decide(st, created, None)
+        assert (d.is_interruption, d.code) == (False, code)
+        assert d.signals["asr"]["status"] == status
+        assert d.signals["maai"] == {"status": "unavailable"}
+    st, created = state_at(0.8)
+    st.asr_status = "pending"
+    assert c.decide(st, created, None).outcome == "wait"
+
+
+def test_decision_codes_and_outcomes():
+    c = BargeinClassifier(has_asr=True, has_maai=True)
+    d = c.decide(*state_at(0.4, "Do not"), None)
+    assert (d.code, d.outcome) == ("phrase_prefix_waiting", "wait")
+    d = c.decide(*state_at(0.8, "Do not stop"), None)
+    assert (d.code, d.outcome) == ("continuer_phrase", "no_interrupt")
+    d = c.decide(*state_at(0.8, "Stop"), None)
+    assert (d.code, d.outcome, d.signals["interrupt_tokens"]) == ("interrupt_token", "interrupt", ["stop"])

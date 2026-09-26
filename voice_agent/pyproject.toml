@@ -25,6 +25,9 @@ test = ["pytest", "pytest-asyncio"]
 [project.scripts]
 local-voice-agent = "local_voice_agent.agent:main"
 bargein-server = "local_voice_agent.bargein_server.__main__:main"
+replay-stt = "local_voice_agent.tools.replay_stt:main"
+replay-policy = "local_voice_agent.tools.replay_policy:main"
+maai-scores = "local_voice_agent.tools.maai_scores:main"
 
 [tool.setuptools.packages.find]
 include = ["local_voice_agent*"]

@@ -1,0 +1,38 @@
+{"kind": "agent", "t": 0.0, "state": "speaking", "text": "Let me walk you through the three plans we offer."}
+{"kind": "stt", "t": 1.3, "type": "interim", "text": "I am"}
+{"kind": "stt", "t": 1.6, "type": "final", "text": "I am with you"}
+{"kind": "stt", "t": 2.8, "type": "interim", "text": "Please"}
+{"kind": "stt", "t": 3.1, "type": "final", "text": "Please proceed"}
+{"kind": "stt", "t": 4.3, "type": "interim", "text": "Yes"}
+{"kind": "stt", "t": 4.6, "type": "final", "text": "Yes"}
+{"kind": "stt", "t": 5.8, "type": "interim", "text": "Okay"}
+{"kind": "stt", "t": 6.1, "type": "final", "text": "Okay"}
+{"kind": "stt", "t": 7.3, "type": "interim", "text": "Stop"}
+{"kind": "stt", "t": 7.6, "type": "final", "text": "Stop"}
+{"kind": "stt", "t": 8.8, "type": "interim", "text": "Do not"}
+{"kind": "stt", "t": 9.1, "type": "final", "text": "Do not stop"}
+{"kind": "agent", "t": 10.0, "state": "listening", "text": "Shall I book the first plan for you?"}
+{"kind": "agent", "t": 10.0, "state": "speaking", "text": "Shall I book the first plan for you?"}
+{"kind": "agent", "t": 12.0, "state": "listening"}
+{"kind": "stt", "t": 12.3, "type": "interim", "text": "I am"}
+{"kind": "stt", "t": 12.6, "type": "final", "text": "I am with you"}
+{"kind": "agent", "t": 13.0, "state": "speaking", "text": "Shall I book the first plan for you?"}
+{"kind": "agent", "t": 15.0, "state": "listening"}
+{"kind": "stt", "t": 15.3, "type": "interim", "text": "Please"}
+{"kind": "stt", "t": 15.6, "type": "final", "text": "Please proceed"}
+{"kind": "agent", "t": 16.0, "state": "speaking", "text": "Shall I book the first plan for you?"}
+{"kind": "agent", "t": 18.0, "state": "listening"}
+{"kind": "stt", "t": 18.3, "type": "interim", "text": "Yes"}
+{"kind": "stt", "t": 18.6, "type": "final", "text": "Yes"}
+{"kind": "agent", "t": 19.0, "state": "speaking", "text": "Shall I book the first plan for you?"}
+{"kind": "agent", "t": 21.0, "state": "listening"}
+{"kind": "stt", "t": 21.3, "type": "interim", "text": "Okay"}
+{"kind": "stt", "t": 21.6, "type": "final", "text": "Okay"}
+{"kind": "agent", "t": 22.0, "state": "speaking", "text": "Shall I book the first plan for you?"}
+{"kind": "agent", "t": 24.0, "state": "listening"}
+{"kind": "stt", "t": 24.3, "type": "interim", "text": "Stop"}
+{"kind": "stt", "t": 24.6, "type": "final", "text": "Stop"}
+{"kind": "agent", "t": 25.0, "state": "speaking", "text": "Shall I book the first plan for you?"}
+{"kind": "agent", "t": 27.0, "state": "listening"}
+{"kind": "stt", "t": 27.3, "type": "interim", "text": "Do not"}
+{"kind": "stt", "t": 27.6, "type": "final", "text": "Do not stop"}

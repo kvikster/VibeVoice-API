@@ -1,0 +1,100 @@
+{
+  "tool": "local_voice_agent.tools.replay_stt",
+  "started_at": "2026-09-26T11:27:47+00:00",
+  "events_file": "replay_stt.sample.jsonl",
+  "wav": {
+    "path": "mix.wav (synthetic: loud tone 0.2-1.4 s as caller, 5x quieter tone 1.8-2.8 s as background)",
+    "sha256": "2a7d3e6a8534274dc26bb97c8fb4796aad8b8b08969e7ef2ced02659b37ced9c",
+    "sample_rate": 16000,
+    "channels_in_file": 1,
+    "duration_s": 3.0
+  },
+  "replay": {
+    "speed": 1.0,
+    "frame_ms": 20,
+    "tail_silence_s": 1.0,
+    "time_fields": {
+      "t": "monotonic seconds since run start, at event receipt",
+      "audio_pos_s": "seconds of audio pushed when the event was received (includes tail silence)"
+    }
+  },
+  "stt_options": {
+    "model": "nemotron-speech-en-sortformer",
+    "punctuate": true,
+    "language_code": "en-US",
+    "sample_rate": 16000,
+    "use_ssl": false,
+    "server": "127.0.0.1:50051",
+    "enable_diarization": true,
+    "max_speaker_count": 4
+  },
+  "adapter_options": {
+    "detect_primary_speaker": true,
+    "suppress_background_speaker": true,
+    "primary_detection": {
+      "frame_size_ms": 100,
+      "rms_buffer_duration": 120.0,
+      "min_rms_samples": 3,
+      "rms_smoothing_factor": 0.5,
+      "threshold_multiplier": 1.3,
+      "decay_to_equal_time": 60,
+      "threshold_min_multiplier": 0.5
+    }
+  },
+  "server_config": {
+    "models": [
+      {
+        "model_name": "fake-nemotron-en",
+        "parameters": {
+          "streaming": "true"
+        }
+      }
+    ],
+    "note": "scripted fake server from tests/fake_riva.py, not a real ASR"
+  },
+  "asr_config_file": {
+    "path": "config/asr.mac.yaml",
+    "sha256": "6e1f8e04e8d1adf419db7e69b6be2d9d236630845d9b56f343a506789108bf45",
+    "note": "file as passed to this tool; the running riva_server may use another config",
+    "content": "# NeMo-Speech.cpp riva_server config for Apple Silicon (Metal).\n#\n#   riva_server --config config/asr.mac.yaml --bind 127.0.0.1:50051\n#\n# Keys are documented in NeMo-Speech.cpp docs/asr/configuration.md. Unknown keys\n# are a hard error. The same file works on a Linux/CUDA server (gpu = CUDA index).\nasr:\n  backend:\n    gpu: 0                       # Metal device; -1 = CPU\n\n  model:\n    # nvidia/nemotron-speech-streaming-en-0.6b (Q8 GGUF). Pre-download with\n    # `nemo-speech pull nemotron-en`, or put an absolute .gguf path here.\n    path: nemotron-en\n\n  streaming:\n    rnnt_right_context: 1        # low-latency preset; -1 = model max (more accurate, more latency)\n\n  vad:\n    # Silero VAD GGUF (see README, one-off conversion). Masks non-speech before\n    # the encoder, which removes words hallucinated from noise.\n    # model_path: /absolute/path/to/silero-v6.2.0.gguf\n    masker:\n      mask_enable: false         # set true together with model_path\n\n  endpointing:\n    enable: true                 # required: LiveKit keeps one stream open and needs mid-stream finals\n    vad_based: false             # true once vad.model_path is set\n    stop_history_eou_ms: 700     # trailing silence that closes a final\n\n  diar:\n    # Streaming Sortformer v2 (4 speakers, CC-BY-4.0). Alternative:\n    # nemotron-3-diarization (V3, 8 speakers, 10 ms frames; preset v3-streaming).\n    model_path: sortformer\n    preset: streaming\n"
+  },
+  "versions": {
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v37-x86_64-with-glibc2.39",
+    "local-voice-agent": null,
+    "livekit-agents": "1.8.3",
+    "livekit-plugins-nvidia": "1.8.3",
+    "livekit": "1.1.18",
+    "nvidia-riva-client": "2.27.0",
+    "grpcio": "1.84.0",
+    "numpy": "2.4.6",
+    "maai": null
+  },
+  "git": {
+    "commit": "f7732a0a5090142bbef1a70378e81f8095d2f2c3",
+    "dirty": true
+  },
+  "summary": {
+    "events": {
+      "adapter.end_of_speech": 2,
+      "adapter.final": 2,
+      "adapter.interim": 2,
+      "adapter.start_of_speech": 1,
+      "raw.end_of_speech.passed": 2,
+      "raw.final.dropped": 1,
+      "raw.final.passed": 1,
+      "raw.interim.passed": 2,
+      "raw.start_of_speech.passed": 1
+    },
+    "primary_speaker_switches": [
+      {
+        "seq": 5,
+        "t": 1.4827,
+        "from": null,
+        "to": "S1"
+      }
+    ],
+    "drained": true,
+    "wall_time_s": 3.985
+  }
+}

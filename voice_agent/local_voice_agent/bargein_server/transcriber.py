@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import riva.client
 
 logger = logging.getLogger("local_voice_agent.bargein.asr")
+
+
+@dataclass(frozen=True)
+class TranscriptResult:
+    status: Literal["received", "empty", "error", "timeout"]
+    text: str = ""
+    error: str | None = None
 
 
 class RivaTranscriber:
@@ -30,11 +39,15 @@ class RivaTranscriber:
             r.alternatives[0].transcript.strip() for r in response.results if r.alternatives
         ).strip()
 
-    async def transcribe(self, pcm16: np.ndarray) -> str | None:
+    async def transcribe(self, pcm16: np.ndarray) -> TranscriptResult:
         try:
-            return await asyncio.wait_for(
+            text = await asyncio.wait_for(
                 asyncio.to_thread(self._recognize, pcm16), timeout=self._timeout_s
             )
-        except Exception as e:  # timeout, gRPC error, server not up
+        except asyncio.TimeoutError:
+            logger.warning("overlap transcription timed out after %.2fs", self._timeout_s)
+            return TranscriptResult("timeout", error=f"no result within {self._timeout_s}s")
+        except Exception as e:  # gRPC error, server not up
             logger.warning("overlap transcription failed: %s", e)
-            return None
+            return TranscriptResult("error", error=f"{type(e).__name__}: {e}"[:300])
+        return TranscriptResult("received" if text else "empty", text)

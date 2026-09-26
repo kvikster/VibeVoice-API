@@ -7,8 +7,12 @@
 INTERRUPTION_MODE selects how the agent treats user speech that overlaps its own:
 
     filters         option 1: lexicon + interim hold (+ optional MaAI) in stt_node
+    shadow          behaves exactly like "vad"; option 1 and 2 decisions are only logged
     adaptive_local  option 2: LiveKit's adaptive interruption against the local bargein server
     vad             LiveKit defaults, for A/B comparison
+
+DECISION_LOG=path.jsonl (with "filters" or "shadow") writes a log that
+``python -m local_voice_agent.tools.replay_policy`` can replay.
 
 Run:  python -m local_voice_agent.agent console   (local mic/speaker, no LiveKit server)
       python -m local_voice_agent.agent dev       (connects to LIVEKIT_URL)
@@ -16,7 +20,9 @@ Run:  python -m local_voice_agent.agent console   (local mic/speaker, no LiveKit
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 from dotenv import load_dotenv
 
@@ -34,7 +40,9 @@ from livekit.agents import (
 )
 from livekit.plugins import openai, silero
 
-from .backchannel.filter import FilterConfig, InterruptionFilterMixin
+from .backchannel.filter import InterruptionFilterMixin
+from .backchannel.policy import FilterConfig
+from .jsonl import JsonlWriter
 from .settings import Settings
 from .stt import build_stt
 
@@ -57,14 +65,16 @@ class VoiceAgent(Agent):
 
 
 class FilteredVoiceAgent(InterruptionFilterMixin, VoiceAgent):
-    def __init__(self, settings: Settings, maai=None) -> None:
+    def __init__(self, settings: Settings, *, maai=None, decision_log: JsonlWriter | None = None) -> None:
         super().__init__()
         self.filter_config = FilterConfig(
             grace_s=settings.filter_grace_s,
             interim_min_words=settings.interim_min_words,
             maai_threshold=settings.maai_threshold,
         )
+        self.filter_mode = "shadow" if settings.interruption_mode == "shadow" else "enforce"
         self.maai = maai
+        self.decision_log = decision_log
 
 
 def turn_handling_for(settings: Settings) -> TurnHandlingOptions:
@@ -96,7 +106,7 @@ def prewarm(proc: JobProcess) -> None:
     proc.userdata["settings"] = settings
     proc.userdata["vad"] = silero.VAD.load()
     proc.userdata["maai"] = None
-    if settings.interruption_mode == "filters" and settings.maai_enabled:
+    if settings.interruption_mode in ("filters", "shadow") and settings.maai_enabled:
         from .backchannel.maai_detector import MaaiBackchannelDetector
 
         proc.userdata["maai"] = MaaiBackchannelDetector(device=settings.maai_device)
@@ -130,8 +140,13 @@ async def entrypoint(ctx: JobContext) -> None:
     def _on_metrics_collected(ev: MetricsCollectedEvent) -> None:
         metrics.log_metrics(ev.metrics)
 
-    if settings.interruption_mode == "filters":
-        agent: Agent = FilteredVoiceAgent(settings, maai=ctx.proc.userdata["maai"])
+    if settings.interruption_mode in ("filters", "shadow"):
+        log = None
+        if settings.decision_log:
+            path = settings.decision_log.format(room=ctx.room.name, ts=time.strftime("%Y%m%d-%H%M%S"))
+            log = JsonlWriter(path)
+            ctx.add_shutdown_callback(lambda: asyncio.to_thread(log.close))
+        agent: Agent = FilteredVoiceAgent(settings, maai=ctx.proc.userdata["maai"], decision_log=log)
     else:
         agent = VoiceAgent()
 

@@ -21,15 +21,19 @@ import logging
 import queue
 import threading
 from collections import deque
+from collections.abc import Callable
 
 import numpy as np
 
 from livekit import rtc
 
+from .policy import MaaiReading
+
 logger = logging.getLogger("local_voice_agent.maai")
 
 SAMPLE_RATE = 16000
 FRAME_SAMPLES = 1280  # 80 ms, one bc_det frame at 12.5 Hz
+CLOCK = "maai_user_audio_s"  # seconds of user audio fed to MaAI
 _MAX_AGENT_BUFFER_S = 30.0
 
 
@@ -71,9 +75,15 @@ class MaaiBackchannelDetector:
         device: str = "cpu",
         lang: str = "en",
         history_s: float = 10.0,
+        on_frame: Callable[[float, float], None] | None = None,
+        realtime: bool = True,
     ) -> None:
+        """``on_frame(t, p_bc)`` is called from the inference thread for every frame.
+        ``realtime=False`` (offline scoring) makes pushes wait instead of dropping frames."""
         from maai import Maai, MaaiInput  # heavy import, optional dependency
 
+        self._on_frame = on_frame
+        self._realtime = realtime
         self._two_channel = two_channel
         self._maai = Maai(
             mode="bc_det" if two_channel else "bc_det_mono",
@@ -105,6 +115,7 @@ class MaaiBackchannelDetector:
 
     def push_user_samples(self, samples: np.ndarray) -> None:
         """Mono float32 user audio at 16 kHz."""
+        jobs = []
         with self._lock:
             self._user_buf = np.concatenate([self._user_buf, samples])
             while len(self._user_buf) >= FRAME_SAMPLES:
@@ -115,15 +126,23 @@ class MaaiBackchannelDetector:
                 if len(agent) < FRAME_SAMPLES:
                     agent = np.pad(agent, (0, FRAME_SAMPLES - len(agent)))
                 self._clock_s += FRAME_SAMPLES / SAMPLE_RATE
-                try:
-                    self._jobs.put_nowait((self._gen, self._clock_s, user, agent))
-                except queue.Full:
-                    logger.warning("MaAI is falling behind real time; dropping a frame")
+                jobs.append((self._gen, self._clock_s, user, agent))
+        for job in jobs:  # outside the lock: the worker takes it too
+            if not self._realtime:
+                self._jobs.put(job)
+                continue
+            try:
+                self._jobs.put_nowait(job)
+            except queue.Full:
+                logger.warning("MaAI is falling behind real time; dropping a frame")
 
     def push_agent(self, frame: rtc.AudioFrame) -> None:
+        self.push_agent_samples(self._agent_rs(frame))
+
+    def push_agent_samples(self, samples: np.ndarray) -> None:
+        """Mono float32 agent audio at 16 kHz, aligned to the user audio clock."""
         if not self._two_channel:
             return
-        samples = self._agent_rs(frame)
         with self._lock:
             self._agent_buf = np.concatenate([self._agent_buf, samples])
             max_len = int(_MAX_AGENT_BUFFER_S * SAMPLE_RATE)
@@ -143,6 +162,21 @@ class MaaiBackchannelDetector:
             values = [p for t, p in self._history if t >= since]
         return max(values, default=0.0)
 
+    def reading(self, window_s: float) -> MaaiReading:
+        """Peak user backchannel probability over the last ``window_s`` of fed audio."""
+        with self._lock:
+            since = self._clock_s - window_s
+            recent = [(t, p) for t, p in self._history if t >= since]
+        if not recent:
+            return MaaiReading(status="unavailable", window_s=window_s, clock=CLOCK, note="no frame in window")
+        return MaaiReading(
+            status="available",
+            p_bc=round(max(p for _, p in recent), 4),
+            evaluated_at=round(recent[-1][0], 3),
+            window_s=window_s,
+            clock=CLOCK,
+        )
+
     def reset(self) -> None:
         """Forget all audio and model state, e.g. at the start of a new overlap."""
         with self._lock:
@@ -156,32 +190,45 @@ class MaaiBackchannelDetector:
         with self._lock:
             return self._history[-1][1] if self._history else 0.0
 
+    def wait_idle(self) -> None:
+        """Block until every pushed frame has been scored."""
+        self._jobs.join()
+
     def close(self) -> None:
         self._jobs.put(None)
         self._thread.join(timeout=2.0)
 
     # -- inference thread --------------------------------------------------
     def _worker(self) -> None:
-        results = self._maai.result_dict_queue
         while (job := self._jobs.get()) is not None:
-            if isinstance(job, str):  # "reset"
-                self._maai.reset_runtime_state()
-                continue
-            gen, t, user, agent = job
             try:
-                self._maai.process(user, agent)
-            except Exception:
-                logger.exception("MaAI inference failed")
+                self._run_job(job)
+            finally:
+                self._jobs.task_done()
+
+    def _run_job(self, job: tuple[int, float, np.ndarray, np.ndarray] | str) -> None:
+        if isinstance(job, str):  # "reset"
+            self._maai.reset_runtime_state()
+            return
+        gen, t, user, agent = job
+        try:
+            self._maai.process(user, agent)
+        except Exception:
+            logger.exception("MaAI inference failed")
+            return
+        results = self._maai.result_dict_queue
+        while True:
+            try:
+                res = results.get_nowait()
+            except queue.Empty:
+                break
+            p = res.get("p_bc_det")
+            if p is None:
                 continue
-            while True:
-                try:
-                    res = results.get_nowait()
-                except queue.Empty:
-                    break
-                p = res.get("p_bc_det")
-                if p is None:
+            p_user = float(p[0] if isinstance(p, (list, tuple, np.ndarray)) else p)
+            with self._lock:
+                if gen != self._gen:
                     continue
-                p_user = float(p[0] if isinstance(p, (list, tuple, np.ndarray)) else p)
-                with self._lock:
-                    if gen == self._gen:
-                        self._history.append((t, p_user))
+                self._history.append((t, p_user))
+            if self._on_frame is not None:
+                self._on_frame(t, p_user)

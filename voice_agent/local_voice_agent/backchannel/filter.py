@@ -3,23 +3,26 @@
 Port of AssemblyAI's ``BackchannelSTTFilterMixin``
 (https://github.com/AssemblyAI-Solutions/livekit-interruption-filters,
 ``filters/backchannel_stt.py``, MIT, Copyright (c) 2026 David Lange), adapted
-to NeMo-Speech.cpp behind ``livekit-plugins-nvidia``:
+to NeMo-Speech.cpp behind ``livekit-plugins-nvidia``. The rules live in
+``policy.decide_text``:
 
-* Gate 1 - only while the agent speaks, plus a grace window after it stops.
-* Gate 2 - only transcript events. START/END_OF_SPEECH always pass, and so do
-  empty finals, which ``MultiSpeakerAdapter`` emits to clear the interim text
-  of a suppressed background speaker.
-* Gate 3 - drop transcripts made only of backchannel tokens/phrases.
-* Gate 4 (new) - hold short interims. Sortformer speaker tags only exist on
-  finals, so an interim cannot yet be attributed to the primary speaker; an
-  interim shorter than ``interim_min_words`` content words waits for its final.
-  Barge-in words ("stop", "wait", ...) are never held.
-* Gate 5 (new, optional) - MaAI ``bc_det``: a short utterance the lexicon does
-  not know ("aha", or an ASR mishearing such as "but high") is dropped when
-  MaAI says the user is backchanneling right now.
+* only while the agent speaks, or within ``grace_s`` after it stopped - unless
+  its last utterance was a question, so a quick "Yes" answer is never dropped;
+* START/END_OF_SPEECH and empty finals (``MultiSpeakerAdapter`` clearing a
+  suppressed background final) always pass;
+* drop transcripts made only of backchannel tokens, phrases or continuers
+  ("I am with you", "do not stop"); barge-in words ("stop", "wait") pass;
+* hold interims shorter than ``interim_min_words`` content words: Sortformer
+  speaker tags only exist on finals, so they wait for their final;
+* optional MaAI ``bc_det`` veto for short utterances the lexicon doesn't know.
 
-Nothing here touches LiveKit private attributes; ``stt_node`` and ``tts_node``
-are public override points.
+``mode="shadow"`` yields every STT event unchanged and immediately, and only
+logs what enforce mode would have done. Either mode can log a replayable JSONL
+(agent states, STT events, MaAI readings, decisions of both policies); see
+``tools.replay_policy``.
+
+``stt_node`` and ``tts_node`` are public override points; nothing here touches
+LiveKit private attributes.
 """
 
 from __future__ import annotations
@@ -27,49 +30,42 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import AsyncIterable
-from dataclasses import dataclass
+from typing import Any, Literal
 
 from livekit import rtc
 from livekit.agents import Agent, stt
 from livekit.agents.voice import ModelSettings
 
-from .lexicon import Verdict, classify, content_words
+from ..jsonl import EVENT_TYPE_NAMES, JsonlWriter, event_fields, speech_duration
+from ..policy_runner import PolicyRunner
 from .maai_detector import MaaiBackchannelDetector
+from .policy import FilterConfig
 
 log = logging.getLogger("local_voice_agent.filter")
 
-_TRANSCRIPT_TYPES = {
-    stt.SpeechEventType.INTERIM_TRANSCRIPT,
-    stt.SpeechEventType.PREFLIGHT_TRANSCRIPT,
-    stt.SpeechEventType.FINAL_TRANSCRIPT,
-}
-
-
-@dataclass
-class FilterConfig:
-    grace_s: float = 1.0
-    """Keep filtering this long after the agent stops speaking."""
-    interim_min_words: int = 3
-    """While the agent speaks, interims with fewer content words wait for the final."""
-    maai_threshold: float = 0.45
-    """MaAI event-level operating point suggested by its authors."""
-    maai_max_words: int = 2
-    """MaAI may only veto utterances up to this many content words."""
-    maai_window_s: float = 1.5
-    """How far back to look for a MaAI backchannel peak."""
+FilterMode = Literal["enforce", "shadow"]
 
 
 class InterruptionFilterMixin:
     """Put ahead of ``Agent`` in the MRO: ``class MyAgent(InterruptionFilterMixin, Agent)``."""
 
     filter_config: FilterConfig = FilterConfig()
+    filter_mode: FilterMode = "enforce"
     maai: MaaiBackchannelDetector | None = None
+    decision_log: JsonlWriter | None = None
 
-    _last_speaking_at: float = 0.0
+    _runner: PolicyRunner | None = None
+    _clock_t0: float | None = None
+    _agent_text: str = ""
+    _seq: int = 0
+    _listening_to_session: bool = False
 
+    # -- LiveKit nodes --------------------------------------------------------
     async def stt_node(
         self, audio: AsyncIterable[rtc.AudioFrame], model_settings: ModelSettings
     ) -> AsyncIterable[stt.SpeechEvent]:
+        self._listen_to_agent_state()
+
         async def tee() -> AsyncIterable[rtc.AudioFrame]:
             async for frame in audio:
                 if self.maai is not None:
@@ -77,51 +73,78 @@ class InterruptionFilterMixin:
                 yield frame
 
         async for ev in Agent.default.stt_node(self, tee(), model_settings):  # type: ignore[arg-type]
-            if self._should_drop(ev):
-                log.info(
-                    "event_filtered text=%r type=%s agent_state=%s",
-                    ev.alternatives[0].text if ev.alternatives else "",
-                    ev.type,
-                    self.session.agent_state,  # type: ignore[attr-defined]
-                )
-                continue
-            yield ev
+            if self._process(ev):
+                yield ev
 
     async def tts_node(
         self, text: AsyncIterable[str], model_settings: ModelSettings
     ) -> AsyncIterable[rtc.AudioFrame]:
-        async for frame in Agent.default.tts_node(self, text, model_settings):  # type: ignore[arg-type]
+        self._agent_text = ""
+
+        async def tee_text() -> AsyncIterable[str]:
+            async for chunk in text:
+                self._agent_text += chunk
+                yield chunk
+
+        async for frame in Agent.default.tts_node(self, tee_text(), model_settings):  # type: ignore[arg-type]
             if self.maai is not None:
                 self.maai.push_agent(frame)
             yield frame
 
-    def _should_drop(self, ev: stt.SpeechEvent) -> bool:
-        cfg = self.filter_config
-        now = time.monotonic()
-        if self.session.agent_state == "speaking":  # type: ignore[attr-defined]
-            self._last_speaking_at = now
-        elif now - self._last_speaking_at > cfg.grace_s:
-            if self.maai is not None:
-                self.maai.clear_agent()
-            return False
+    # -- policy ---------------------------------------------------------------
+    def _now(self) -> float:
+        if self._clock_t0 is None:
+            self._clock_t0 = time.monotonic()
+        return round(time.monotonic() - self._clock_t0, 4)
 
-        if ev.type not in _TRANSCRIPT_TYPES or not ev.alternatives:
-            return False
+    def _policy(self) -> PolicyRunner:
+        if self._runner is None:
+            self._runner = PolicyRunner(self.filter_config, mode=self.filter_mode)
+        return self._runner
 
-        text = ev.alternatives[0].text
-        verdict = classify(text)
-        if verdict in (Verdict.EMPTY, Verdict.INTERRUPT):
-            return False
-        if verdict is Verdict.BACKCHANNEL:
-            return True
+    def _listen_to_agent_state(self) -> None:
+        if self._listening_to_session:
+            return
+        self._listening_to_session = True
+        self.session.on("agent_state_changed", lambda ev: self._on_agent_state(ev.new_state))  # type: ignore[attr-defined]
 
-        words = content_words(text)
-        if (
-            self.maai is not None
-            and words <= cfg.maai_max_words
-            and self.maai.recent_max(cfg.maai_window_s) >= cfg.maai_threshold
-        ):
+    def _on_agent_state(self, state: str) -> None:
+        t = self._now()
+        runner = self._policy()
+        runner.agent(t, state, text=self._agent_text)
+        self._log({"kind": "agent", "t": t, "state": state, "text": self._agent_text})
+        if state != "speaking" and self.maai is not None:
+            self.maai.clear_agent()
+
+    def _process(self, ev: stt.SpeechEvent) -> bool:
+        """Log the decisions for ``ev``; return whether to forward it."""
+        runner = self._policy()
+        # the session state is authoritative; catch up if a change was not observed
+        if self.session.agent_state != runner.agent_state:  # type: ignore[attr-defined]
+            self._on_agent_state(self.session.agent_state)  # type: ignore[attr-defined]
+
+        t = self._now()
+        self._seq += 1
+        ev_type = EVENT_TYPE_NAMES.get(ev.type, str(ev.type))
+        text = ev.alternatives[0].text if ev.alternatives else None
+        reading = self.maai.reading(self.filter_config.maai_window_s) if self.maai is not None else None
+        stt_record: dict[str, Any] = {"kind": "stt", "t": t, "seq": self._seq} | event_fields(ev)
+        if reading is not None:
+            stt_record["maai"] = reading.as_dict()
+        self._log(stt_record)
+
+        # computed from the logged (rounded) fields so a replay sees exactly the same input
+        text_filter, classifier = runner.stt(
+            t, ev_type, text, seq=self._seq, maai=reading, speech_duration_s=speech_duration(stt_record)
+        )
+        self._log(text_filter)
+        self._log(classifier)
+
+        if self.filter_mode == "shadow" or text_filter["action"] == "pass":
             return True
-        if ev.type != stt.SpeechEventType.FINAL_TRANSCRIPT and words < cfg.interim_min_words:
-            return True
+        log.info("event_filtered action=%s reason=%s text=%r", text_filter["action"], text_filter["reason"], text)
         return False
+
+    def _log(self, record: dict[str, Any]) -> None:
+        if self.decision_log is not None:
+            self.decision_log.write(record)

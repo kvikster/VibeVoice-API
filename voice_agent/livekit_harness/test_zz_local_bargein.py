@@ -17,6 +17,7 @@ from .fake_session import FakeActions, create_session, run_session
 
 sys.path.insert(0, os.environ["VOICE_AGENT_DIR"])
 from local_voice_agent.bargein_server import BargeinServer  # noqa: E402
+from local_voice_agent.bargein_server.transcriber import TranscriptResult  # noqa: E402
 
 pytestmark = [pytest.mark.unit]
 
@@ -27,7 +28,7 @@ class FakeTranscriber:
 
     async def transcribe(self, pcm16):
         self.calls += 1
-        return self.text
+        return TranscriptResult("received" if self.text else "empty", self.text)
 
 
 class Plain(Agent):

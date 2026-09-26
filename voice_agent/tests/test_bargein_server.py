@@ -20,6 +20,7 @@ from livekit.agents.inference.interruption import (
 )
 
 from local_voice_agent.bargein_server import BargeinServer
+from local_voice_agent.bargein_server.transcriber import TranscriptResult
 
 KEY, SECRET = "devkey", "devsecret-devsecret-devsecret-00"
 
@@ -31,7 +32,7 @@ class FakeTranscriber:
 
     async def transcribe(self, pcm16):
         self.calls += 1
-        return self.text
+        return TranscriptResult("received" if self.text else "empty", self.text)
 
 
 def frame(seconds: float = 0.01) -> rtc.AudioFrame:
@@ -40,9 +41,17 @@ def frame(seconds: float = 0.01) -> rtc.AudioFrame:
     return rtc.AudioFrame(data=data.tobytes(), sample_rate=16000, num_channels=1, samples_per_channel=n)
 
 
-async def run_overlap(transcript: str, *, overlap_s: float, api_secret: str = SECRET):
+class ListLog:
+    def __init__(self) -> None:
+        self.records = []
+
+    def write(self, rec) -> None:
+        self.records.append(rec)
+
+
+async def run_overlap(transcript: str, *, overlap_s: float, api_secret: str = SECRET, log=None):
     transcriber = FakeTranscriber(transcript)
-    server = BargeinServer(api_key=KEY, api_secret=SECRET, transcriber=transcriber)
+    server = BargeinServer(api_key=KEY, api_secret=SECRET, transcriber=transcriber, decision_log=log)
     async with TestServer(server.app()) as ts, aiohttp.ClientSession() as http:
         detector = AdaptiveInterruptionDetector(
             base_url=str(ts.make_url("")).rstrip("/"),
@@ -100,3 +109,18 @@ async def test_noise_without_words_does_not_interrupt():
 async def test_bad_token_is_rejected():
     _, errors, asr = await run_overlap("stop", overlap_s=0.3, api_secret="wrong-secret-wrong-secret-000000")
     assert errors and not asr.calls
+
+
+async def test_decision_log_explains_every_reply():
+    log = ListLog()
+    events, errors, _ = await run_overlap("uh-huh", overlap_s=1.0, log=log)
+    assert not errors and log.records
+    reasons = [r["reason"] for r in log.records]
+    assert reasons[0] == "overlap_too_short" and "backchannel_tokens" in reasons
+    rec = next(r for r in log.records if r["reason"] == "backchannel_tokens")
+    assert rec["decision"] == "no_interrupt" and rec["reply"] == "InterruptionWSInferenceDoneMessage"
+    assert rec["signals"]["asr"] == {"status": "received", "text": "uh-huh"}
+    assert rec["signals"]["maai"] == {"status": "unavailable"}
+    assert rec["thresholds"]["min_overlap_s"] == 0.25 and rec["threshold"] == 0.5
+    # before the first transcript came back the ASR state is explicit
+    assert log.records[0]["signals"]["asr"]["status"] in ("pending", "not_requested", "received")

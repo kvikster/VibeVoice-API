@@ -25,8 +25,10 @@
 
 | Частина | Статус |
 |---|---|
-| Логіка фільтра, словника, класифікатора, обгортки MaAI | 45 unit-тестів (`pytest`) |
+| Логіка фільтра, словника, класифікатора, обгортки MaAI, інструменти оцінки | 97 unit-тестів (`pytest`) |
+| `replay_stt` через справжній плагін `nvidia` і `MultiSpeakerAdapter` | проти скриптованого gRPC-сервера Riva (`tests/fake_riva.py`) |
 | Опція 1 всередині справжнього `AgentSession` 1.8.3 | 5 сценаріїв у тест-харнесі livekit/agents (`livekit_harness/run.sh`): без фільтра «Mhm.» перебиває агента, з фільтром — ні; «Stop!» і повне речення перебивають; шум без слів — ні |
+| Shadow у справжньому `AgentSession` | поведінка і таймінг станів ідентичні контрольному прогону без фільтра; журнал відтворюється в ті самі рішення |
 | Опція 2: справжній клієнт `AdaptiveInterruptionDetector` 1.8.3 ↔ наш сервер | unit-тести протоколу + 2 наскрізні сценарії в `AgentSession`: «mhm» не перебиває, «stop please» перебиває через ~0.35 с; сервер відповідає за < 1 мс |
 | `riva_server` на Mac (Metal + gRPC), реальні Nemotron/Sortformer | **не перевірено** — у середовищі розробки не було Mac/GPU і доступу до HuggingFace |
 | MaAI з реальною моделлю | **не перевірено** (ваги з HuggingFace); перевірено лише обв'язку з фейковою моделлю |
@@ -145,12 +147,16 @@ python -m local_voice_agent.agent dev
 (MIT), адаптований під NeMo-Speech.cpp. Він обгортає публічний `Agent.stt_node`,
 приватних атрибутів LiveKit не чіпає.
 
-Поки агент говорить (і `FILTER_GRACE_S` після), транскрипт:
-1. з самих backchannel-слів чи фраз («mhm», «yeah», «I see») — **відкидається**;
-2. зі словом-перебиванням («stop», «wait», «no», «sorry», «actually»…) — **проходить одразу**;
-3. проміжний (interim), коротший за `INTERIM_MIN_WORDS` значущих слів, — **чекає фіналу**.
-   Мітки Sortformer бувають лише у фіналах, тому короткий interim ще не можна
-   приписати основному мовцю;
+Правила діють, поки агент говорить, і ще `FILTER_GRACE_S` після того, як замовк.
+**Виняток:** якщо остання репліка агента закінчилась «?», відповідь («Yes») не фільтрується.
+Транскрипт:
+1. з самих backchannel-слів, фраз («mhm», «yeah», «yes», «I see») або continuers
+   («I am with you», «please proceed», «do not stop») — **відкидається**;
+2. зі словом-перебиванням («stop», «wait», «no», «sorry», «actually»…) — **проходить одразу**.
+   Continuer-фрази зіставляються раніше, тому «do not stop» не перебиває;
+3. проміжний (interim), коротший за `INTERIM_MIN_WORDS` значущих слів або ще не дописаний
+   початок фрази («do not», «I am»), — **чекає фіналу**. Мітки Sortformer бувають лише у
+   фіналах, тому короткий interim ще не можна приписати основному мовцю;
 4. з MaAI (`MAAI_ENABLED=1`): коротке (≤ 2 слів) незнайоме слово або помилка розпізнавання
    («but high» замість «uh-huh») відкидається, якщо MaAI `bc_det` бачить backchannel.
    MaAI отримує обидва канали: користувача (з `stt_node`) і агента (з `tts_node`).
@@ -158,8 +164,7 @@ python -m local_voice_agent.agent dev
 `interruption.min_words = 1` забороняє VAD перебивати агента без жодного слова,
 тож кашель, сміх і шум не перебивають. Фонові мовці відсікаються раніше, у `MultiSpeakerAdapter`.
 
-Словник і налаштування — у `backchannel/lexicon.py`. «yes» навмисно не вважається
-backchannel: «так» часто є відповіддю.
+Правила — чиста функція `backchannel/policy.py::decide_text`, словник — `backchannel/lexicon.py`.
 
 ## Опція 2: `INTERRUPTION_MODE=adaptive_local`
 
@@ -185,22 +190,133 @@ INTERRUPTION_MODE=adaptive_local python -m local_voice_agent.agent console
 - Правила — у `bargein_server/classifier.py`. Без слів (шум, кашель) перебивання немає.
   `BARGEIN_THRESHOLD` (або `threshold` від клієнта) відсікає менш упевнені рішення.
 
+`--decision-log path.jsonl` (або `BARGEIN_DECISION_LOG`) записує кожне рішення з причиною,
+станом ASR (`pending` / `received` / `empty` / `error` / `timeout`), оцінкою MaAI і порогами.
+
 **Ризик:** протокол недокументований. Моделі повідомлень імпортуються з самого
 livekit-agents, тож зміна протоколу проявиться помилкою, а не тихим збоєм.
 Тримайте `livekit-agents==1.8.3` і проганяйте `livekit_harness/run.sh` після кожного оновлення.
 
+## Оцінка на власному корпусі (без повного агента)
+
+Три CLI, яким не потрібні LiveKit room, LLM чи TTS (ні Ollama, ні VibeVoice):
+
+| Інструмент | Що робить |
+|---|---|
+| `tools.replay_stt` | WAV → той самий STT, що в агента (riva_server + `MultiSpeakerAdapter`) у реальному темпі → JSONL подій **до і після** speaker suppression з одного прогону |
+| `tools.replay_policy` | JSONL подій (+ часова шкала агента, + опційно MaAI) → рішення обох політик із поясненнями; без ASR |
+| `tools.maai_scores` | WAV абонента (+ опційно WAV агента) → оцінки MaAI `bc_det` на кожні 80 мс |
+
+### 1. `replay_stt`: чи втрачає слова ASR, чи їх прибирає suppression
+
+```bash
+python -m local_voice_agent.tools.replay_stt A_caller.wav --out runs/A.stt.jsonl
+python -m local_voice_agent.tools.replay_stt B_background.wav --out runs/B.stt.jsonl
+python -m local_voice_agent.tools.replay_stt C_mix.wav --out runs/C.stt.jsonl
+#   --riva host:port  --speed 1.0  --tail-silence 1.0  --no-suppress  --max-speakers 4
+```
+
+Кожна подія STT записується двічі:
+- `layer: "raw"` — як вона дійшла до `MultiSpeakerAdapter`, плюс `adapter_action` (`passed` / `modified` / `dropped`) і `primary_speaker` після неї (`primary_speaker_before`, якщо він щойно змінився);
+- `layer: "adapter"` — що отримав би агент, з посиланням `source_seq` на raw-подію.
+
+Спільні поля:
+- `t` — монотонний час отримання від старту;
+- `audio_pos_samples` / `audio_pos_s` — скільки аудіо вже подано;
+- `type` (`interim` / `final` / `start_of_speech` / `end_of_speech`);
+- `text`, `speaker_id`, `start_time_s` / `end_time_s`, `words` (`start_ms` / `end_ms`) і `word_speaker_tags` (мітки Sortformer по словах, до мажоритарного голосування плагіна) — **лише коли STT їх віддає**. В interim їх немає, і ключі тоді просто відсутні.
+
+Кінець WAV (і `--tail-silence`) закриває потік, і `riva_server` віддає останні фінали. Поруч пишеться
+`*.meta.json` з версіями SDK, параметрами STT і адаптера, конфігом моделі від сервера
+(`GetRivaSpeechRecognitionConfig`), знімком `config/asr.mac.yaml`, sha256 WAV і підсумком:
+кількість подій за рівнями й діями, перемикання primary speaker, чи потік догнано до кінця.
+
+Приклад: [`examples/replay_stt.sample.jsonl`](examples/replay_stt.sample.jsonl) +
+[`.meta.json`](examples/replay_stt.sample.meta.json). Його отримано на скриптованому фейковому
+сервері з `tests/fake_riva.py`, не на реальній моделі; схема та сама. У ньому фінал фонового
+мовця `S2` має `adapter_action: "dropped"`, а агент замість нього отримує порожній фінал
+(`cleared_suppressed_final`).
+
+Для спостереження скрипт підключається до двох приватних місць livekit-agents 1.8.3:
+`MultiSpeakerAdapterWrapper._detector` і `_convert_to_speech_data` у стрімі NVIDIA. Дані він не змінює.
+
+### 2. Shadow-режим і відтворення рішень
+
+**Наживо:** `INTERRUPTION_MODE=shadow DECISION_LOG=logs/{room}-{ts}.jsonl`. Агент поводиться
+рівно як `vad`, тобто як LiveKit без фільтрів: події STT не видаляються, не затримуються і
+аудіо не перериваються. У журнал пишуться стани агента, всі події STT, оцінки MaAI і рішення
+обох політик. `DECISION_LOG` працює і в режимі `filters`.
+
+**Офлайн:**
+
+```bash
+python -m local_voice_agent.tools.replay_policy runs/C.stt.jsonl \
+    --agent runs/C.agent.jsonl [--maai runs/C.maai.jsonl] --out runs/C.decisions.jsonl
+python -m local_voice_agent.tools.replay_policy logs/room-….jsonl --layer all --out …   # живий журнал
+```
+
+- **Часова шкала агента** — рядки `{"kind": "agent", "audio_pos_s": 3.2, "state": "speaking", "text": "…?"}`.
+  `?` у кінці тексту означає «агент чекає відповіді».
+- **Час.** Береться `audio_pos_s`, якщо поле є, інакше `t`. Усі файли мають бути на одній шкалі.
+- **Детермінізм і причинність.** Той самий журнал дає ті самі рішення. Рішення використовує
+  лише входи до свого часу, тож обрізання журналу не змінює попередніх рішень (є тести на обидва).
+- **Живий журнал** відтворюється в точно ті рішення, що були записані наживо (перевірено в `AgentSession`).
+
+Кожне рішення — два записи на подію:
+
+| Поле | `policy: "text_filter"` (опція 1) | `policy: "interruption_classifier"` (опція 2) |
+|---|---|---|
+| вердикт | `action`: `pass` / `hold` / `drop` + окремо `interruption`: `interrupt` / `no_interrupt` / `not_applicable` | `decision`: `interrupt` / `wait` / `no_interrupt` / `not_applicable` |
+| причина | `reason`: `interrupt_token`, `backchannel_tokens`, `backchannel_phrase`, `continuer_phrase`, `maai_backchannel`, `short_interim_awaits_final`, `phrase_prefix_awaits_final`, `awaiting_answer`, `agent_not_speaking`, `content_words`, `empty_transcript`, `non_transcript` | `reason`: `overlap_too_short`, `interrupt_token`, `continuer_phrase`, `content_words`, `maai_backchannel`, `single_word_held` / `_waiting`, `phrase_prefix_waiting`, `asr_pending` / `_empty` / `_error` / `_timeout`, `agent_not_speaking`, `no_user_utterance` |
+| контекст | `t`, `type`, `text`, `agent` (`state`, `since_speaking_s`, `awaiting_answer`) | те саме + `signals.elapsed_overlap_s` |
+| сигнали | `signals`: токени, фрази, кількість значущих слів, `maai` | `signals`: `asr` (`status`, `text`), `maai`, кількість слів, токени |
+| пороги | `thresholds` | `thresholds` |
+
+- **`maai`** — або `{"status": "unavailable"}`, або `{"status": "available", "p_bc", "evaluated_at", "window_s", "clock"}`.
+  Без MaAI текстові правила працюють як є, тож внесок MaAI видно, якщо прогнати з `--maai` і без.
+- **Класифікатор опції 2 у replay** застосовується до транскриптів STT, а не до аудіо.
+  Перекриття тут починається з першого транскрипту, тобто на латентність ASR пізніше, ніж у сервера.
+  Тому `elapsed_overlap_s` занижений. Якщо репліка приходить одним фіналом із часом слів, початок
+  зсувається назад на тривалість мовлення. Живий shadow для самого сервера `/bargein` не робив:
+  в adaptive-режимі LiveKit повністю довіряє відповіді сервера, тож «нейтральної» відповіді не
+  існує. Для сервера є `--decision-log` у звичайному режимі.
+
+**Набір перевірок** — [`examples/policy_cases.events.jsonl`](examples/policy_cases.events.jsonl) →
+[`examples/policy_cases.decisions.jsonl`](examples/policy_cases.decisions.jsonl),
+тести в `tests/test_policy_cases.py`. Значення нижче — рішення на фінальному транскрипті:
+
+| Фраза | Агент говорить: фільтр | Агент говорить: класифікатор | Агент спитав і чекає: обидва |
+|---|---|---|---|
+| I am with you | drop · continuer_phrase | no_interrupt | pass · awaiting_answer / not_applicable |
+| Please proceed | drop · continuer_phrase | no_interrupt | pass · awaiting_answer / not_applicable |
+| Yes | drop · backchannel_tokens | no_interrupt | pass · awaiting_answer / not_applicable |
+| Okay | drop · backchannel_tokens | no_interrupt | pass · awaiting_answer / not_applicable |
+| Stop | pass · interrupt_token → interrupt | interrupt | pass · awaiting_answer / not_applicable |
+| Do not stop | drop · continuer_phrase | no_interrupt | pass · awaiting_answer / not_applicable |
+
+### 3. `maai_scores`: окремий внесок MaAI
+
+```bash
+python -m local_voice_agent.tools.maai_scores C_mix.wav --agent-wav C_agent.wav --out runs/C.maai.jsonl
+```
+
+- З `--agent-wav` працює двоканальна модель, як в опції 1; без нього — моно, як у сервері `/bargein`.
+- Кадр на момент `t` використовує лише аудіо до `t`.
+- Потрібен extra `[maai]`, WAV 16 кГц.
+
 ## Тести
 
 ```bash
-pytest                            # 45 unit-тестів, секунди
-./livekit_harness/run.sh          # клонує livekit/agents@1.8.3 і проганяє 7 сценаріїв у AgentSession
+pytest                            # 97 unit-тестів, ~10 с
+./livekit_harness/run.sh          # клонує livekit/agents@1.8.3 і проганяє 8 сценаріїв у AgentSession
 ```
 
 ## Налаштування
 
 | Змінна | За замовчуванням | Що робить |
 |---|---|---|
-| `INTERRUPTION_MODE` | `filters` | `filters` / `adaptive_local` / `vad` (для A/B) |
+| `INTERRUPTION_MODE` | `filters` | `filters` / `shadow` / `adaptive_local` / `vad` (для A/B) |
+| `DECISION_LOG` | — | журнал для `replay_policy` (`{room}`, `{ts}` підставляються) |
 | `SUPPRESS_BACKGROUND_SPEAKER` | `1` | відкидати фінали не-основних мовців |
 | `ASR_MAX_SPEAKERS` | `4` | для Sortformer v2 максимум 4 |
 | `FILTER_GRACE_S` | `1.0` | скільки фільтрувати після того, як агент замовк |

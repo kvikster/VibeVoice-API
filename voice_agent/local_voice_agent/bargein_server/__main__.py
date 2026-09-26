@@ -23,6 +23,11 @@ def main() -> None:
     p.add_argument("--maai", action="store_true", default=os.environ.get("MAAI_ENABLED") == "1")
     p.add_argument("--maai-device", default=os.environ.get("MAAI_DEVICE", "cpu"))
     p.add_argument("--threshold", type=float, default=float(os.environ.get("BARGEIN_THRESHOLD", "0.5")))
+    p.add_argument(
+        "--decision-log",
+        default=os.environ.get("BARGEIN_DECISION_LOG"),
+        help="JSONL file for every decision with its reason, signals and ASR/MaAI state",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
 
@@ -31,6 +36,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    from ..jsonl import JsonlWriter
     from .server import BargeinServer
     from .transcriber import RivaTranscriber
 
@@ -49,6 +55,7 @@ def main() -> None:
         transcriber=RivaTranscriber(args.riva) if args.riva else None,
         maai_factory=maai_factory,
         default_threshold=args.threshold,
+        decision_log=JsonlWriter(args.decision_log) if args.decision_log else None,
     )
     web.run_app(server.app(), host=args.host, port=args.port)
 

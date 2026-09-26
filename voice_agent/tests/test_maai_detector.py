@@ -86,3 +86,33 @@ def test_reset_discards_state(detector):
     detector.reset()
     assert detector.recent_max(10.0) == 0.0
     wait_for(lambda: model.resets == 1)
+
+
+def test_reading_reports_time_and_window(detector):
+    assert detector.reading(1.0).status == "unavailable"
+    detector.push_user(frame(0.5, 0.16, 16000))
+    wait_for(lambda: detector.reading(1.0).status == "available")
+    r = detector.reading(1.0)
+    assert r.p_bc == pytest.approx(0.9) and r.evaluated_at == pytest.approx(0.16) and r.window_s == 1.0
+
+
+def test_offline_scoring_writes_every_frame(tmp_path, monkeypatch):
+    fake = types.ModuleType("maai")
+    fake.Maai = FakeMaai
+    fake.MaaiInput = types.SimpleNamespace(Chunk=lambda: object())
+    monkeypatch.setitem(sys.modules, "maai", fake)
+    from local_voice_agent.jsonl import read_jsonl
+    from local_voice_agent.tools.maai_scores import score
+
+    from .fake_riva import write_wav
+
+    caller = write_wav(tmp_path / "caller.wav", [(0.0, 1.0, 0.5)], duration_s=2.0)
+    agent = write_wav(tmp_path / "agent.wav", [(1.0, 2.0, 0.5)], duration_s=2.0)
+    out = tmp_path / "caller.maai.jsonl"
+    meta = score(caller, out, agent=agent)
+    frames = list(read_jsonl(out))
+    assert meta["mode"] == "bc_det" and len(frames) == 25  # 2 s / 80 ms
+    assert [f["t"] for f in frames] == sorted(f["t"] for f in frames)
+    assert frames[0]["p_bc"] == 0.9 and frames[-1]["p_bc"] == 0.1  # loud caller first, then silence
+    user, agent_ch = FakeMaai.instances[-1].calls[-1]
+    assert agent_ch.max() > 0.2  # agent audio aligned to the second half

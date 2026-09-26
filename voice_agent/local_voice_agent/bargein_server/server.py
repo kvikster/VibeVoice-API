@@ -46,6 +46,8 @@ from livekit.agents.inference.interruption import (
 )
 
 from ..backchannel.maai_detector import MaaiBackchannelDetector
+from ..backchannel.policy import MaaiReading
+from ..jsonl import JsonlWriter
 from .classifier import (
     SAMPLE_RATE,
     BargeinClassifier,
@@ -72,12 +74,19 @@ class BargeinServer:
         maai_factory: Callable[[], MaaiBackchannelDetector] | None = None,
         classifier_config: ClassifierConfig | None = None,
         default_threshold: float = 0.5,
+        decision_log: JsonlWriter | None = None,
     ) -> None:
         self._verifier = api.TokenVerifier(api_key, api_secret) if api_key and api_secret else None
         self.transcriber = transcriber
         self.maai_factory = maai_factory
         self.classifier_config = classifier_config or ClassifierConfig()
         self.default_threshold = default_threshold
+        self.decision_log = decision_log
+        self._t0 = time.monotonic()
+
+    def log_decision(self, record: dict) -> None:
+        if self.decision_log is not None:
+            self.decision_log.write({"t": round(time.monotonic() - self._t0, 4)} | record)
 
     def app(self) -> web.Application:
         app = web.Application()
@@ -183,7 +192,8 @@ class _Session:
             created_at, pcm = await self._queue.get()
             # Answer superseded windows right away; only the newest is analysed.
             while not self._queue.empty():
-                await self._reply(created_at, len(pcm), Decision(False, self._last_p, "superseded"), 0.0)
+                superseded = Decision(False, self._last_p, "superseded", "superseded")
+                await self._reply(created_at, len(pcm), superseded, 0.0)
                 created_at, pcm = self._queue.get_nowait()
             t0 = time.perf_counter()
             decision = self._analyse(created_at, pcm)
@@ -207,19 +217,28 @@ class _Session:
             n = min(len(pcm), int((elapsed + 0.3) * SAMPLE_RATE))
             self._spawn_transcription(state, pcm[-n:].copy(), elapsed)
 
-        p_bc = self._maai.recent_max(min(elapsed + 0.2, 3.0)) if self._maai is not None else None
-        return self._classifier.decide(state, created_at, p_bc)
+        if self._maai is not None:
+            reading = self._maai.reading(min(elapsed + 0.2, 3.0))
+        elif self._server.maai_factory is not None:
+            reading = MaaiReading(status="unavailable", note="model still loading")
+        else:
+            reading = MaaiReading(status="unavailable")
+        return self._classifier.decide(state, created_at, reading.p_bc, maai_reading=reading)
 
     def _spawn_transcription(self, state: OverlapState, snippet: np.ndarray, elapsed: float) -> None:
         transcriber = self._server.transcriber
         assert transcriber is not None
         state.transcribing = True
+        if state.transcript is None:
+            state.asr_status = "pending"
 
         async def run() -> None:
             try:
-                text = await transcriber.transcribe(snippet)
-                if text is not None:
-                    state.transcript = text
+                result = await transcriber.transcribe(snippet)
+                state.asr_status = result.status
+                state.asr_error = result.error
+                if result.status in ("received", "empty"):
+                    state.transcript = result.text or state.transcript
                     state.transcript_len_s = elapsed
             finally:
                 state.transcribing = False
@@ -239,9 +258,27 @@ class _Session:
                 probabilities=probabilities(d.probability, n_samples),
             )
         )
-        if d.reason != "superseded":
+        if d.code != "superseded":
             log = logger.info if is_interruption else logger.debug
             log("session %s: %s (%s)", self._id, "BARGE-IN" if is_interruption else "hold", d.reason)
+            self._server.log_decision(
+                {
+                    "kind": "decision",
+                    "policy": "interruption_classifier",
+                    "mode": "enforce",
+                    "session": self._id,
+                    "created_at": created_at,
+                    "decision": "interrupt" if is_interruption else d.outcome,
+                    "reply": cls.__name__,
+                    "reason": d.code,
+                    "detail": d.reason,
+                    "probability": d.probability,
+                    "threshold": self._threshold,
+                    "prediction_duration_s": round(took, 6),
+                    "signals": d.signals,
+                    "thresholds": self._classifier.thresholds(),
+                }
+            )
 
     async def _error(self, message: str, code: int) -> None:
         await self._send(InterruptionWSErrorMessage(message=message, code=code, session_id=self._id))

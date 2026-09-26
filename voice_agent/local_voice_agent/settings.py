@@ -6,7 +6,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Literal
 
-InterruptionMode = Literal["filters", "adaptive_local", "vad"]
+InterruptionMode = Literal["filters", "shadow", "adaptive_local", "vad"]
+_MODES = ("filters", "shadow", "adaptive_local", "vad")
 
 
 def _env(name: str, default: str) -> str:
@@ -35,10 +36,14 @@ class Settings:
     tts_voice: str = field(default_factory=lambda: _env("TTS_VOICE", "alloy"))
     tts_api_key: str = field(default_factory=lambda: _env("TTS_API_KEY", "local"))
 
-    # Interruption handling: "filters" (option 1), "adaptive_local" (option 2), "vad" (plain LiveKit)
+    # Interruption handling: "filters" (option 1), "shadow" (plain LiveKit behaviour, option 1/2
+    # decisions only logged), "adaptive_local" (option 2), "vad" (plain LiveKit)
     interruption_mode: InterruptionMode = field(
         default_factory=lambda: _env("INTERRUPTION_MODE", "filters")  # type: ignore[return-value]
     )
+    # Replayable JSONL of agent states, STT events and policy decisions ("filters" and "shadow").
+    # "{room}" and "{ts}" are substituted.
+    decision_log: str | None = field(default_factory=lambda: os.environ.get("DECISION_LOG") or None)
     maai_enabled: bool = field(default_factory=lambda: _env_bool("MAAI_ENABLED", False))
     maai_device: str = field(default_factory=lambda: _env("MAAI_DEVICE", "cpu"))
     maai_threshold: float = field(default_factory=lambda: float(_env("MAAI_THRESHOLD", "0.45")))
@@ -46,7 +51,5 @@ class Settings:
     interim_min_words: int = field(default_factory=lambda: int(_env("INTERIM_MIN_WORDS", "3")))
 
     def __post_init__(self) -> None:
-        if self.interruption_mode not in ("filters", "adaptive_local", "vad"):
-            raise ValueError(
-                f"INTERRUPTION_MODE must be filters|adaptive_local|vad, got {self.interruption_mode!r}"
-            )
+        if self.interruption_mode not in _MODES:
+            raise ValueError(f"INTERRUPTION_MODE must be one of {'|'.join(_MODES)}, got {self.interruption_mode!r}")
