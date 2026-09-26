@@ -94,3 +94,28 @@ async def test_without_suppression_background_final_passes(tmp_path, riva):
     records, _ = await run(tmp_path, addr, suppress_background=False)
     assert [r["text"] for r in finals(records, "adapter")] == ["Hello there.", "Background talk."]
     assert finals(records, "adapter")[1]["is_primary_speaker"] is False
+
+
+async def test_enhancer_runs_before_the_stt(tmp_path, riva):
+    import numpy as np
+
+    from livekit import rtc
+
+    class Halve:  # stands in for the ai-coustics FrameProcessor
+        frames = 0
+
+        def _process(self, frame):
+            self.frames += 1
+            data = (np.frombuffer(frame.data, dtype=np.int16) // 2).astype(np.int16)
+            return rtc.AudioFrame(data=data.tobytes(), sample_rate=frame.sample_rate, num_channels=1,
+                                  samples_per_channel=frame.samples_per_channel)
+
+    _, addr = riva
+    wav = write_wav(tmp_path / "mix.wav", [(0.2, 1.4, 0.5), (1.8, 2.8, 0.1)], duration_s=3.0)
+    settings = dataclasses.replace(Settings(), riva_server=addr, audio_enhancement="aic", aic_license_key="k")
+    enhancer = Halve()
+    meta = await replay(ReplayConfig(wav=wav, out=tmp_path / "e.jsonl", settings=settings, speed=20.0,
+                                     tail_silence_s=0.3, enhancer=enhancer))
+    assert enhancer.frames == 165  # (3.0 s + 0.3 s) / 20 ms
+    assert meta["enhancement"]["model"] == "quail_vf_l"
+    assert meta["summary"]["events"]["raw.final.passed"] == 1

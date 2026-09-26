@@ -21,6 +21,9 @@ receipt), ``audio_pos_samples`` / ``audio_pos_s`` (audio pushed so far),
 provides them ``text``, ``speaker_id``, ``start_time_s``/``end_time_s``,
 ``words`` and ``word_speaker_tags``. Missing data is omitted, never faked.
 
+``--enhance aic`` runs the ai-coustics enhancer on each frame before the STT, the
+way ``AUDIO_ENHANCEMENT=aic`` does on room input (needs ``AIC_LICENSE_KEY``).
+
 Run metadata (SDK versions, STT options, server model config, ASR config file,
 WAV fingerprint, summary) goes to a sidecar ``*.meta.json``.
 
@@ -49,6 +52,7 @@ from riva.client.proto import riva_asr_pb2, riva_asr_pb2_grpc
 from livekit import rtc
 from livekit.agents import stt
 
+from .. import aic
 from ..jsonl import JsonlWriter, event_fields
 from ..settings import Settings
 from ..stt import build_stt
@@ -121,6 +125,8 @@ class ReplayConfig:
     drain_timeout_s: float = 30.0
     asr_config: Path | None = None
     server_check: bool = True
+    enhancer: Any = None
+    """Optional FrameProcessor applied before the STT (``--enhance aic``), as room input does."""
 
 
 def meta_path_for(out: Path) -> Path:
@@ -219,11 +225,14 @@ async def replay(cfg: ReplayConfig) -> dict[str, Any]:
             if delay > 0:
                 await asyncio.sleep(delay)
             chunk = samples[i : i + frame]
-            stream.push_frame(
-                rtc.AudioFrame(
-                    data=chunk.tobytes(), sample_rate=rate, num_channels=1, samples_per_channel=len(chunk)
-                )
+            if len(chunk) < frame:  # enhancers want a constant frame size
+                chunk = np.pad(chunk, (0, frame - len(chunk)))
+            audio_frame = rtc.AudioFrame(
+                data=chunk.tobytes(), sample_rate=rate, num_channels=1, samples_per_channel=len(chunk)
             )
+            if cfg.enhancer is not None:
+                audio_frame = aic.enhance(cfg.enhancer, audio_frame)
+            stream.push_frame(audio_frame)
             fed = i + len(chunk)
         stream.end_input()  # flush: riva_server finalizes and returns the last finals
 
@@ -274,6 +283,7 @@ async def replay(cfg: ReplayConfig) -> dict[str, Any]:
             "suppress_background_speaker": adapter._suppress_background,  # type: ignore[attr-defined]
             "primary_detection": dataclasses.asdict(adapter._opt),  # type: ignore[attr-defined]
         },
+        "enhancement": aic.enhancer_description(cfg.settings) if cfg.enhancer is not None else None,
         "server_config": server_config,
         "asr_config_file": _config_snapshot(cfg.asr_config),
         "versions": run_meta.versions(),
@@ -311,6 +321,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--no-suppress", action="store_true", help="keep background finals (still detects primary)")
     p.add_argument("--asr-config", type=Path, default=Path(__file__).resolve().parents[2] / "config" / "asr.mac.yaml")
     p.add_argument("--no-server-check", action="store_true")
+    p.add_argument(
+        "--enhance", choices=["none", "aic"], help="ai-coustics enhancement before STT (default: AUDIO_ENHANCEMENT)"
+    )
     args = p.parse_args(argv)
 
     settings = Settings()
@@ -321,7 +334,10 @@ def main(argv: list[str] | None = None) -> None:
         overrides["max_speakers"] = args.max_speakers
     if args.no_suppress:
         overrides["suppress_background"] = False
+    if args.enhance:
+        overrides["audio_enhancement"] = args.enhance
     settings = dataclasses.replace(settings, **overrides)
+    enhancer = aic.build_enhancer(settings) if settings.audio_enhancement == "aic" else None
 
     out = args.out or Path(args.wav.stem + ".stt.jsonl")
     meta = asyncio.run(
@@ -336,6 +352,7 @@ def main(argv: list[str] | None = None) -> None:
                 drain_timeout_s=args.drain_timeout,
                 asr_config=args.asr_config,
                 server_check=not args.no_server_check,
+                enhancer=enhancer,
             )
         )
     )

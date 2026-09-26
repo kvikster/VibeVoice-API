@@ -102,6 +102,15 @@ python -m local_voice_agent.tools.replay_policy runs/C_mix.stt.jsonl \
 3. **Незавершений початок фрази** в interim («do not», «I am», «please») тепер чекає фіналу: `phrase_prefix_awaits_final` / `phrase_prefix_waiting`. Без цього класифікатор опції 2 перебивав на частковому «Do not» до того, як прийде «stop».
 4. **Класифікатор опції 2 на транскриптах STT.** Перекриття починається з першого транскрипту, тобто пізніше за реальний початок мовлення на латентність ASR. Тому `elapsed_overlap_s` тут занижений відносно аудіо-сервера `/bargein`. Для реплік, що приходять одним фіналом із часом слів, початок зсувається назад на тривалість мовлення.
 
+## Оновлення: ai-coustics (VAD і покращення звуку)
+
+Нова незалежна опція, деталі в README («Опція 3»). Для оцінки на корпусі:
+- **Порівняння ASR з покращенням і без:** `replay_stt --enhance aic` подає аудіо через ai-coustics перед STT, так само як `AUDIO_ENHANCEMENT=aic` у кімнаті. У `meta.enhancement` записується модель і налаштування. Порівнюйте з прогоном без `--enhance` на тих самих A/B/C.
+- **Порівняння VAD:** `tools.vad_scores X.wav --vad silero|aic|aic_enhancer [--enhance aic]` пише часову шкалу VAD. Мовлення, знайдене в B (лише фон), — хибні спрацювання; пропущене в C проти A — втрачені репліки абонента.
+- **Спільний автомат.** `VAD_BACKEND=aic` використовує скінченний автомат Silero з моделлю ai-coustics, тож різниця між `silero` і `aic` — лише в моделі.
+- **Потрібно:** `AIC_LICENSE_KEY`; моделі з CDN ai-coustics (або `AIC_VAD_MODEL_PATH`); сесія ліцензії активується онлайн, якщо немає offline entitlement.
+- **Перевірено:** реальний плагін із неправильним ключем пропускає аудіо без змін. Решта — з фейковим SDK. Реальні моделі не запускались.
+
 ## Що свідомо не зроблено
 
 - **Живий shadow для сервера `/bargein`.** В adaptive-режимі LiveKit повністю довіряє відповіді сервера: відповідь «не перебивати» робить агента неперебивним, а «перебивати» обриває потік аудіо для цього перекриття. Нейтральної відповіді немає. Натомість сервер має `--decision-log` зі станом ASR (`pending` / `received` / `empty` / `error` / `timeout`), MaAI і порогами, а класифікатор оцінюється в shadow/replay на подіях STT.
@@ -111,7 +120,7 @@ python -m local_voice_agent.tools.replay_policy runs/C_mix.stt.jsonl \
 
 | Що | Результат |
 |---|---|
-| `pytest` у `voice_agent/` | 97 passed |
+| `pytest` у `voice_agent/` | 104 passed |
 | `./livekit_harness/run.sh` (клон livekit/agents@1.8.3) | 8 passed |
 | ruff (E, F, W, B) | чисто |
 

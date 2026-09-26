@@ -6,7 +6,7 @@
 ```
  мікрофон ─► LiveKit (room / console)
               │
-              ├─► Silero VAD + TurnDetector v1-mini (локально)
+              ├─► [ai-coustics покращення] ─► VAD (Silero або ai-coustics) + TurnDetector v1-mini
               │
               └─► stt_node ──► nvidia.STT ──gRPC──► riva_server (NeMo-Speech.cpp, Metal/CUDA)
                      │            │                   ├─ Nemotron-Speech EN 0.6B (streaming RNNT)
@@ -25,13 +25,16 @@
 
 | Частина | Статус |
 |---|---|
-| Логіка фільтра, словника, класифікатора, обгортки MaAI, інструменти оцінки | 97 unit-тестів (`pytest`) |
+| Логіка фільтра, словника, класифікатора, обгортки MaAI, інструменти оцінки | 104 unit-тести (`pytest`) |
 | `replay_stt` через справжній плагін `nvidia` і `MultiSpeakerAdapter` | проти скриптованого gRPC-сервера Riva (`tests/fake_riva.py`) |
 | Опція 1 всередині справжнього `AgentSession` 1.8.3 | 5 сценаріїв у тест-харнесі livekit/agents (`livekit_harness/run.sh`): без фільтра «Mhm.» перебиває агента, з фільтром — ні; «Stop!» і повне речення перебивають; шум без слів — ні |
 | Shadow у справжньому `AgentSession` | поведінка і таймінг станів ідентичні контрольному прогону без фільтра; журнал відтворюється в ті самі рішення |
 | Опція 2: справжній клієнт `AdaptiveInterruptionDetector` 1.8.3 ↔ наш сервер | unit-тести протоколу + 2 наскрізні сценарії в `AgentSession`: «mhm» не перебиває, «stop please» перебиває через ~0.35 с; сервер відповідає за < 1 мс |
 | `riva_server` на Mac (Metal + gRPC), реальні Nemotron/Sortformer | **не перевірено** — у середовищі розробки не було Mac/GPU і доступу до HuggingFace |
 | MaAI з реальною моделлю | **не перевірено** (ваги з HuggingFace); перевірено лише обв'язку з фейковою моделлю |
+| ai-coustics: реальний плагін з неправильним ключем | перевірено: пропускає аудіо без змін і логує причину |
+| ai-coustics: `AicVAD`, VAD улучшувача, `vad_scores`, `replay_stt --enhance` | перевірено з фейковим `aic_sdk` і фейковим улучшувачем |
+| ai-coustics з вашим ключем і реальними моделями | **не перевірено**: немає ключа, CDN моделей недоступний із середовища розробки |
 | VibeVoice TTS через `openai.TTS` | **не перевірено**; див. «Обмеження» |
 
 ## Встановлення на Mac (Apple Silicon)
@@ -197,6 +200,50 @@ INTERRUPTION_MODE=adaptive_local python -m local_voice_agent.agent console
 livekit-agents, тож зміна протоколу проявиться помилкою, а не тихим збоєм.
 Тримайте `livekit-agents==1.8.3` і проганяйте `livekit_harness/run.sh` після кожного оновлення.
 
+## Опція 3: ai-coustics — VAD і очищення звуку
+
+Незалежна від `INTERRUPTION_MODE`: поєднується з будь-якою з опцій вище. Два перемикачі:
+
+| Змінна | Значення | Що робить |
+|---|---|---|
+| `AUDIO_ENHANCEMENT` | `none` / `aic` | покращення звуку ai-coustics на вході кімнати, до STT, VAD і TurnDetector. `quail_vf_l` / `quail_vf_s` (Voice Focus) прибирає і шум, і **фонові голоси**; `quail_l` / `rook_s` — лише шум |
+| `VAD_BACKEND` | `silero` | Silero, як було |
+| | `aic` | окрема VAD-модель ai-coustics (`vad-2.1-xxs-16khz`, `aic_sdk.Vad`) у скінченному автоматі Silero: пороги, мінімальна тиша й префікс такі самі, змінюється лише ймовірність мовлення. Працює і в `console` |
+| | `aic_enhancer` | прапорець мовлення, який улучшувач рахує на **вихідному** сигналі (`ai_coustics.VAD()`). Потрібен `AUDIO_ENHANCEMENT=aic` |
+
+**Рекомендована зв'язка** (режим кімнати: `dev` / `start`):
+
+```bash
+uv pip install -e ".[aic]"
+# .env: AIC_LICENSE_KEY=...   (ключ з developers.ai-coustics.com; не комітьте)
+AUDIO_ENHANCEMENT=aic AIC_ENHANCER_MODEL=quail_vf_l VAD_BACKEND=aic_enhancer \
+  python -m local_voice_agent.agent dev
+```
+
+**У `console`** LiveKit не застосовує `noise_cancellation`, тож працює лише `VAD_BACKEND=aic`.
+
+**Як влаштовано:**
+- Покращення — офіційний `livekit-plugins-ai-coustics` 0.3.2 з `Auth.ai_coustics_api(license_key)`, тобто без LiveKit Cloud.
+- `AicVAD` — ~40 рядків (`local_voice_agent/aic.py`): адаптер `aic_sdk.Vad` під інтерфейс моделі Silero.
+- **З неправильним ключем** плагін пише `License key format is invalid…`, вимикає покращення і далі пропускає аудіо без змін; агент не падає (перевірено на реальному бінарнику).
+
+**Мережа і ліцензія:**
+- Аудіо з машини не виходить.
+- SDK активує сесію і звітує про використання на сервери ai-coustics, якщо у ліцензії немає offline entitlement.
+- Моделі при першому запуску тягнуться з `artifacts.ai-coustics.io`. Для офлайну вкажіть `AIC_VAD_MODEL_PATH`. Як моделі отримує плагін, закрито в його бінарнику; я не перевіряв.
+- `AIC_TELEMETRY=0` (за замовчуванням) вимикає OpenTelemetry-експорт і ставить `DO_NOT_TRACK=1` для звітів про помилки SDK.
+
+**Нюанси:**
+- **Сумісність із TurnDetector.** Потоковий `TurnDetector` вимагає від VAD `min_silence_duration` ≥ 0.25 с. `AicVAD` бере 0.55 с, як Silero. Для VAD улучшувача утримання тиші задається `AIC_ENHANCER_VAD_HOLD_S` (0.55 за замовчуванням). Це моє припущення, його варто підлаштувати на корпусі.
+- **STT отримує вже покращений звук.** Voice Focus може прибрати фоновий голос до того, як його побачить Sortformer, тож фінали фонових мовців можуть просто зникнути. Це варто перевірити на A/B/C:
+  ```bash
+  python -m local_voice_agent.tools.replay_stt C_mix.wav --enhance aic --out runs/C.aic.stt.jsonl
+  python -m local_voice_agent.tools.vad_scores B_background.wav --vad aic --out runs/B.vad.aic.jsonl
+  python -m local_voice_agent.tools.vad_scores B_background.wav --vad silero --out runs/B.vad.silero.jsonl
+  python -m local_voice_agent.tools.vad_scores C_mix.wav --enhance aic --vad aic_enhancer --out runs/C.vad.enh.jsonl
+  ```
+  `vad_scores` пише ймовірність мовлення на кожен крок і події початку/кінця мовлення. Мовлення, яке VAD знаходить у B (лише фон), — хибне спрацювання.
+
 ## Оцінка на власному корпусі (без повного агента)
 
 Три CLI, яким не потрібні LiveKit room, LLM чи TTS (ні Ollama, ні VibeVoice):
@@ -206,6 +253,7 @@ livekit-agents, тож зміна протоколу проявиться пом
 | `tools.replay_stt` | WAV → той самий STT, що в агента (riva_server + `MultiSpeakerAdapter`) у реальному темпі → JSONL подій **до і після** speaker suppression з одного прогону |
 | `tools.replay_policy` | JSONL подій (+ часова шкала агента, + опційно MaAI) → рішення обох політик із поясненнями; без ASR |
 | `tools.maai_scores` | WAV абонента (+ опційно WAV агента) → оцінки MaAI `bc_det` на кожні 80 мс |
+| `tools.vad_scores` | WAV → часова шкала VAD (Silero / ai-coustics / VAD улучшувача, опційно після покращення) |
 
 ### 1. `replay_stt`: чи втрачає слова ASR, чи їх прибирає suppression
 
@@ -307,7 +355,7 @@ python -m local_voice_agent.tools.maai_scores C_mix.wav --agent-wav C_agent.wav 
 ## Тести
 
 ```bash
-pytest                            # 97 unit-тестів, ~10 с
+pytest                            # 104 unit-тести, ~10 с
 ./livekit_harness/run.sh          # клонує livekit/agents@1.8.3 і проганяє 8 сценаріїв у AgentSession
 ```
 
@@ -316,6 +364,7 @@ pytest                            # 97 unit-тестів, ~10 с
 | Змінна | За замовчуванням | Що робить |
 |---|---|---|
 | `INTERRUPTION_MODE` | `filters` | `filters` / `shadow` / `adaptive_local` / `vad` (для A/B) |
+| `VAD_BACKEND` / `AUDIO_ENHANCEMENT` | `silero` / `none` | ai-coustics, див. «Опція 3» |
 | `DECISION_LOG` | — | журнал для `replay_policy` (`{room}`, `{ts}` підставляються) |
 | `SUPPRESS_BACKGROUND_SPEAKER` | `1` | відкидати фінали не-основних мовців |
 | `ASR_MAX_SPEAKERS` | `4` | для Sortformer v2 максимум 4 |

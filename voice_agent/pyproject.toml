@@ -20,6 +20,8 @@ dependencies = [
 # MaAI bc_det: heavy (torch, transformers, onnxruntime) and pulls pyaudio,
 # which needs `brew install portaudio` on macOS.
 maai = ["maai>=0.2.20"]
+# ai-coustics enhancement + VAD (license key from developers.ai-coustics.com)
+aic = ["aic-sdk==3.2.0", "livekit-plugins-ai-coustics==0.3.2"]
 test = ["pytest", "pytest-asyncio"]
 
 [project.scripts]
@@ -28,6 +30,7 @@ bargein-server = "local_voice_agent.bargein_server.__main__:main"
 replay-stt = "local_voice_agent.tools.replay_stt:main"
 replay-policy = "local_voice_agent.tools.replay_policy:main"
 maai-scores = "local_voice_agent.tools.maai_scores:main"
+vad-scores = "local_voice_agent.tools.vad_scores:main"
 
 [tool.setuptools.packages.find]
 include = ["local_voice_agent*"]

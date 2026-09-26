@@ -1,6 +1,7 @@
 """Self-hosted English voice agent.
 
     STT  NeMo-Speech.cpp riva_server (Nemotron-Speech EN + Sortformer) -> MultiSpeakerAdapter
+    VAD  Silero, or ai-coustics (VAD_BACKEND); optional ai-coustics enhancement (AUDIO_ENHANCEMENT)
     LLM  any OpenAI-compatible server (Ollama by default)
     TTS  any OpenAI-compatible server (this repo's VibeVoice API by default)
 
@@ -27,6 +28,7 @@ import time
 from dotenv import load_dotenv
 
 from livekit.agents import (
+    NOT_GIVEN,
     Agent,
     AgentServer,
     AgentSession,
@@ -37,9 +39,12 @@ from livekit.agents import (
     cli,
     inference,
     metrics,
+    room_io,
 )
-from livekit.plugins import openai, silero
+from livekit.agents.types import NotGiven
+from livekit.plugins import openai
 
+from . import aic
 from .backchannel.filter import InterruptionFilterMixin
 from .backchannel.policy import FilterConfig
 from .jsonl import JsonlWriter
@@ -104,7 +109,7 @@ server = AgentServer()
 def prewarm(proc: JobProcess) -> None:
     settings = Settings()
     proc.userdata["settings"] = settings
-    proc.userdata["vad"] = silero.VAD.load()
+    proc.userdata["vad"] = aic.build_vad(settings)  # VAD_BACKEND: silero | aic | aic_enhancer
     proc.userdata["maai"] = None
     if settings.interruption_mode in ("filters", "shadow") and settings.maai_enabled:
         from .backchannel.maai_detector import MaaiBackchannelDetector
@@ -150,7 +155,14 @@ async def entrypoint(ctx: JobContext) -> None:
     else:
         agent = VoiceAgent()
 
-    await session.start(agent=agent, room=ctx.room)
+    room_options: room_io.RoomOptions | NotGiven = NOT_GIVEN
+    if settings.audio_enhancement == "aic":
+        # ai-coustics enhancement on the caller's audio before STT / VAD / turn detection.
+        # LiveKit applies noise_cancellation in room mode only, not in `console`.
+        room_options = room_io.RoomOptions(
+            audio_input=room_io.AudioInputOptions(noise_cancellation=aic.build_enhancer(settings))
+        )
+    await session.start(agent=agent, room=ctx.room, room_options=room_options)
 
 
 def main() -> None:
