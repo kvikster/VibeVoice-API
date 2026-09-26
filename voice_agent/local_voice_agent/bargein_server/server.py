@@ -58,6 +58,8 @@ from .classifier import (
     probabilities,
 )
 from .transcriber import RivaTranscriber
+from .stt_route import GatewaySTTRoute
+from .aic_vad import AicVadHub
 
 logger = logging.getLogger("local_voice_agent.bargein")
 
@@ -75,6 +77,8 @@ class BargeinServer:
         classifier_config: ClassifierConfig | None = None,
         default_threshold: float = 0.5,
         decision_log: JsonlWriter | None = None,
+        stt_route: GatewaySTTRoute | None = None,
+        vad_hub: AicVadHub | None = None,
     ) -> None:
         self._verifier = api.TokenVerifier(api_key, api_secret) if api_key and api_secret else None
         self.transcriber = transcriber
@@ -82,6 +86,8 @@ class BargeinServer:
         self.classifier_config = classifier_config or ClassifierConfig()
         self.default_threshold = default_threshold
         self.decision_log = decision_log
+        self.stt_route = stt_route
+        self.vad_hub = vad_hub
         self._t0 = time.monotonic()
 
     def log_decision(self, record: dict) -> None:
@@ -91,6 +97,8 @@ class BargeinServer:
     def app(self) -> web.Application:
         app = web.Application()
         app.router.add_get("/bargein", self._handle_ws)
+        if self.stt_route is not None:
+            app.router.add_get("/stt", self._handle_stt)
         app.router.add_get("/health", self._handle_health)
         return app
 
@@ -98,6 +106,19 @@ class BargeinServer:
         return web.json_response({"ok": True})
 
     async def _handle_ws(self, request: web.Request) -> web.StreamResponse:
+        self._verify(request)
+
+        ws = web.WebSocketResponse(max_msg_size=8 * 1024 * 1024)
+        await ws.prepare(request)
+        await _Session(self, ws, request.headers).run()
+        return ws
+
+    async def _handle_stt(self, request: web.Request) -> web.StreamResponse:
+        self._verify(request)
+        assert self.stt_route is not None
+        return await self.stt_route.handle(request)
+
+    def _verify(self, request: web.Request) -> None:
         if self._verifier is not None:
             token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
             try:
@@ -105,14 +126,9 @@ class BargeinServer:
             except Exception:
                 raise web.HTTPUnauthorized(text="invalid token") from None
 
-        ws = web.WebSocketResponse(max_msg_size=8 * 1024 * 1024)
-        await ws.prepare(request)
-        await _Session(self, ws).run()
-        return ws
-
 
 class _Session:
-    def __init__(self, server: BargeinServer, ws: web.WebSocketResponse) -> None:
+    def __init__(self, server: BargeinServer, ws: web.WebSocketResponse, headers) -> None:
         self._server = server
         self._ws = ws
         self._id = uuid.uuid4().hex[:12]
@@ -120,6 +136,7 @@ class _Session:
         self._state = OverlapState()
         self._threshold = server.default_threshold
         self._maai: MaaiBackchannelDetector | None = None
+        self._headers = headers
         self._classifier = BargeinClassifier(
             server.classifier_config,
             has_asr=server.transcriber is not None,
@@ -211,6 +228,7 @@ class _Session:
         state.last_created_at = created_at
         if self._maai is not None and len(tail):
             self._maai.push_user_samples(tail.astype(np.float32) / 32768.0)
+        vad_reading = self._server.vad_hub.read(self._headers) if self._server.vad_hub else None
 
         elapsed = state.elapsed_s(created_at)
         if self._classifier.wants_transcript(state, created_at):
@@ -223,7 +241,14 @@ class _Session:
             reading = MaaiReading(status="unavailable", note="model still loading")
         else:
             reading = MaaiReading(status="unavailable")
-        return self._classifier.decide(state, created_at, reading.p_bc, maai_reading=reading)
+        return self._classifier.decide(
+            state, created_at, reading.p_bc, maai_reading=reading,
+            vf_vad_p=vad_reading.probability if vad_reading is not None else None,
+            vf_vad_delay_samples=(
+                vad_reading.prediction_delay_samples if vad_reading is not None else None
+            ),
+            vf_vad_age_s=vad_reading.age_s if vad_reading is not None else None,
+        )
 
     def _spawn_transcription(self, state: OverlapState, snippet: np.ndarray, elapsed: float) -> None:
         transcriber = self._server.transcriber

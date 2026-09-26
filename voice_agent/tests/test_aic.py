@@ -15,6 +15,7 @@ import pytest
 from livekit import rtc
 
 from local_voice_agent import aic
+from local_voice_agent.bargein_server.aic_vad import AicVadFactory, AicVadHub
 from local_voice_agent.jsonl import read_jsonl
 from local_voice_agent.settings import Settings
 from local_voice_agent.tools.vad_scores import score
@@ -120,6 +121,36 @@ def test_aic_vad_is_compatible_with_the_turn_detector(fake_aic_sdk, tmp_path):
     assert isinstance(vad, aic.AicVAD)
     assert vad.min_silence_duration >= 0.25  # LiveKit's streaming TurnDetector requirement
     assert fake_aic_sdk == []  # a local model file means no download
+
+
+def test_gateway_voice_focus_vad_processes_incremental_tail(fake_aic_sdk, tmp_path):
+    config = settings(
+        aic_vad_model="vad-vf-2.0-s-16khz",
+        aic_vad_model_path=str(tmp_path / "voice-focus.aicmodel"),
+    )
+    scorer = AicVadFactory(config)()
+    loud = np.full(128, 12000, dtype=np.int16)
+    assert scorer.push(loud) is None
+    assert scorer.push(loud) > 0.9
+    scorer.reset()
+    assert scorer.push(np.zeros(256, dtype=np.int16)) < 0.1
+    assert FakeVad.instances[-1].resets == 1
+
+
+def test_gateway_vad_hub_excludes_other_rooms_and_stale_scores(monkeypatch):
+    from local_voice_agent.bargein_server import aic_vad
+
+    clock = [100.0]
+    monkeypatch.setattr(aic_vad.time, "monotonic", lambda: clock[0])
+    hub = AicVadHub(max_age_s=0.5)
+    headers = {"X-LiveKit-Room-ID": "room-a", "X-LiveKit-Job-ID": "job-a"}
+    lease = hub.start(headers)
+    hub.publish(lease, 0.9, 480)
+    assert hub.read(headers).probability == 0.9
+    assert hub.read({"X-LiveKit-Room-ID": "room-b", "X-LiveKit-Job-ID": "job-a"}) is None
+    clock[0] += 0.6
+    assert hub.read(headers) is None
+    hub.close(lease)
 
 
 async def test_enhancer_vad_reads_the_flag_on_each_frame(tmp_path):

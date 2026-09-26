@@ -20,6 +20,7 @@ from livekit.agents.inference.interruption import (
 )
 
 from local_voice_agent.bargein_server import BargeinServer
+from local_voice_agent.bargein_server.aic_vad import AicVadHub
 from local_voice_agent.bargein_server.transcriber import TranscriptResult
 
 KEY, SECRET = "devkey", "devsecret-devsecret-devsecret-00"
@@ -49,9 +50,15 @@ class ListLog:
         self.records.append(rec)
 
 
-async def run_overlap(transcript: str, *, overlap_s: float, api_secret: str = SECRET, log=None):
+async def run_overlap(
+    transcript: str, *, overlap_s: float, api_secret: str = SECRET, log=None,
+    vad_hub=None,
+):
     transcriber = FakeTranscriber(transcript)
-    server = BargeinServer(api_key=KEY, api_secret=SECRET, transcriber=transcriber, decision_log=log)
+    server = BargeinServer(
+        api_key=KEY, api_secret=SECRET, transcriber=transcriber, decision_log=log,
+        vad_hub=vad_hub,
+    )
     async with TestServer(server.app()) as ts, aiohttp.ClientSession() as http:
         detector = AdaptiveInterruptionDetector(
             base_url=str(ts.make_url("")).rstrip("/"),
@@ -124,3 +131,24 @@ async def test_decision_log_explains_every_reply():
     assert rec["thresholds"]["min_overlap_s"] == 0.25 and rec["threshold"] == 0.5
     # before the first transcript came back the ASR state is explicit
     assert log.records[0]["signals"]["asr"]["status"] in ("pending", "not_requested", "received")
+
+
+async def test_gateway_voice_focus_vad_evidence_reaches_adaptive_decisions(monkeypatch):
+    from livekit.agents.inference import interruption
+
+    headers = {"X-LiveKit-Room-ID": "room-1", "X-LiveKit-Job-ID": "job-1"}
+    monkeypatch.setattr(interruption, "get_inference_headers", lambda: headers)
+    hub = AicVadHub()
+    lease = hub.start(headers)
+    hub.publish(lease, 0.84, 320)
+    log = ListLog()
+    events, errors, _ = await run_overlap(
+        "stop", overlap_s=1.0, log=log, vad_hub=hub,
+    )
+    assert not errors and any(event.is_interruption for event in events)
+    assert any(
+        record["signals"]["voice_focus_vad"]["probability"] == 0.84
+        and record["signals"]["voice_focus_vad"]["prediction_delay_samples"] == 320
+        for record in log.records
+    )
+    hub.close(lease)

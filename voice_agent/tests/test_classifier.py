@@ -2,6 +2,7 @@ import numpy as np
 
 from local_voice_agent.bargein_server.classifier import (
     BargeinClassifier,
+    ClassifierConfig,
     OverlapState,
     new_tail,
 )
@@ -81,3 +82,19 @@ def test_decision_codes_and_outcomes():
     assert (d.code, d.outcome) == ("continuer_phrase", "no_interrupt")
     d = c.decide(*state_at(0.8, "Stop"), None)
     assert (d.code, d.outcome, d.signals["interrupt_tokens"]) == ("interrupt_token", "interrupt", ["stop"])
+
+
+def test_voice_focus_vad_is_advisory_until_gate_is_explicit():
+    state, created = state_at(0.8, "stop")
+    baseline = BargeinClassifier(has_asr=True, has_maai=False)
+    decision = baseline.decide(state, created, None, vf_vad_p=0.02, vf_vad_delay_samples=320)
+    assert decision.is_interruption
+    assert decision.signals["voice_focus_vad"] == {
+        "status": "available", "probability": 0.02, "prediction_delay_samples": 320,
+        "age_s": None,
+    }
+    gated = BargeinClassifier(
+        ClassifierConfig(vf_vad_gate_threshold=0.2), has_asr=True, has_maai=False,
+    )
+    assert gated.decide(state, created, None, vf_vad_p=0.02).code == "voice_focus_vad_veto"
+    assert gated.decide(state, created, None, vf_vad_p=None).is_interruption

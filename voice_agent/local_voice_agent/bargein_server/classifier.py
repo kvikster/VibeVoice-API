@@ -59,6 +59,8 @@ class ClassifierConfig:
     """A gap this long between two requests starts a new overlap."""
     transcribe_every_s: float = 0.2
     """Re-transcribe once the overlap has grown by this much."""
+    vf_vad_gate_threshold: float | None = None
+    """Optional Voice Focus veto; leave unset until calibrated against caller speech."""
 
 
 @dataclass
@@ -142,6 +144,9 @@ class BargeinClassifier:
         p_bc: float | None,
         *,
         maai_reading: MaaiReading | None = None,
+        vf_vad_p: float | None = None,
+        vf_vad_delay_samples: int | None = None,
+        vf_vad_age_s: float | None = None,
     ) -> Decision:
         cfg = self.config
         elapsed = state.elapsed_s(created_at)
@@ -154,6 +159,12 @@ class BargeinClassifier:
             "maai": (maai_reading or MaaiReading(
                 status="available" if p_bc is not None else "unavailable", p_bc=p_bc
             )).as_dict(),
+            "voice_focus_vad": {
+                "status": "available" if vf_vad_p is not None else "unavailable",
+                "probability": vf_vad_p,
+                "prediction_delay_samples": vf_vad_delay_samples,
+                "age_s": round(vf_vad_age_s, 3) if vf_vad_age_s is not None else None,
+            },
         }
 
         def d(interrupt: bool, p: float, code: str, reason: str) -> Decision:
@@ -161,6 +172,13 @@ class BargeinClassifier:
 
         if elapsed < cfg.min_overlap_s:
             return d(False, 0.0, "overlap_too_short", "too short")
+
+        if (
+            cfg.vf_vad_gate_threshold is not None
+            and vf_vad_p is not None
+            and vf_vad_p < cfg.vf_vad_gate_threshold
+        ):
+            return d(False, 0.02, "voice_focus_vad_veto", "Voice Focus VAD below gate threshold")
 
         text = state.transcript
         if text:

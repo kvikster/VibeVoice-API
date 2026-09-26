@@ -38,6 +38,7 @@ class FakeRiva(pbg.RivaSpeechRecognitionServicer):
     model_name: str = "fake-nemotron-en"
     configs: list = field(default_factory=list)
     received_s: float = 0.0
+    received_peak: int = 0
 
     def GetRivaSpeechRecognitionConfig(self, request, context):
         return pb.RivaSpeechRecognitionConfigResponse(
@@ -57,6 +58,11 @@ class FakeRiva(pbg.RivaSpeechRecognitionServicer):
                 rate = req.streaming_config.config.sample_rate_hertz or rate
                 continue
             samples += len(req.audio_content) // 2
+            if req.audio_content:
+                self.received_peak = max(
+                    self.received_peak,
+                    int(np.max(np.abs(np.frombuffer(req.audio_content, dtype=np.int16).astype(np.int32)))),
+                )
             self.received_s = samples / rate
             while steps and self.received_s >= steps[0].at_s:
                 yield steps.pop(0).response

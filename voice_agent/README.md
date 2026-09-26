@@ -1,5 +1,10 @@
 # Local voice agent: NeMo-Speech.cpp + LiveKit Agents 1.8.3
 
+Для рознесення агента і сервера Nemotron з ai-coustics див.
+[GATEWAY.md](GATEWAY.md). У цьому режимі ai-coustics і ліцензійний ключ
+залишаються лише на шлюзі, а агент передає туди аудіо через `/stt` і
+використовує `/bargein` для adaptive interruptions.
+
 Повністю локальний англомовний голосовий агент із відсіканням фонових мовців і
 двома варіантами обробки backchannel («uh-huh», «yeah» не перебивають агента).
 

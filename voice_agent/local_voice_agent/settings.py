@@ -27,6 +27,7 @@ def _env_float(name: str, default: str | None = None) -> float | None:
 class Settings:
     # NeMo-Speech.cpp riva_server (Riva-compatible gRPC, plaintext)
     riva_server: str = field(default_factory=lambda: _env("RIVA_SERVER", "127.0.0.1:50051"))
+    stt_gateway_url: str | None = field(default_factory=lambda: os.environ.get("STT_GATEWAY_URL") or None)
     max_speakers: int = field(default_factory=lambda: int(_env("ASR_MAX_SPEAKERS", "4")))
     suppress_background: bool = field(default_factory=lambda: _env_bool("SUPPRESS_BACKGROUND_SPEAKER", True))
 
@@ -83,3 +84,8 @@ class Settings:
             raise ValueError(f"AUDIO_ENHANCEMENT must be none|aic, got {self.audio_enhancement!r}")
         if self.vad_backend == "aic_enhancer" and self.audio_enhancement != "aic":
             raise ValueError("VAD_BACKEND=aic_enhancer reads the enhancer's VAD flag: set AUDIO_ENHANCEMENT=aic")
+        if self.stt_gateway_url and (self.vad_backend != "silero" or self.audio_enhancement != "none"):
+            raise ValueError(
+                "STT_GATEWAY_URL uses server-side ai-coustics; set VAD_BACKEND=silero "
+                "and AUDIO_ENHANCEMENT=none on the agent"
+            )
