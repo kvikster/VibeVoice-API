@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-voice-agent"
+version = "0.1.0"
+description = "Self-hosted English voice agent: NeMo-Speech.cpp (Nemotron + Sortformer) behind LiveKit Agents, with local backchannel handling."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "livekit-agents[nvidia,openai,silero]==1.8.3",
+    "aiohttp>=3.10",
+    "numpy",
+    "pydantic>=2",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+# MaAI bc_det: heavy (torch, transformers, onnxruntime) and pulls pyaudio,
+# which needs `brew install portaudio` on macOS.
+maai = ["maai>=0.2.20"]
+test = ["pytest", "pytest-asyncio"]
+
+[project.scripts]
+local-voice-agent = "local_voice_agent.agent:main"
+bargein-server = "local_voice_agent.bargein_server.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["local_voice_agent*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+# livekit_harness/ runs inside a livekit/agents checkout (see its run.sh)
+norecursedirs = ["livekit_harness", ".*"]

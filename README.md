@@ -149,6 +149,10 @@ curl -sS -X DELETE -H "Authorization: Bearer $VIBEVOICE_ADMIN_TOKEN"   http://12
 - Only TTS (`/audio/speech`) is implemented; there are **no STT endpoints**.
 - Legacy root routes (e.g., `/audio/speech`, `/metrics`) remain for backwards compatibility, but new integrations should prefer the explicit `<base_path>`.
 
+## Local voice agent
+
+[`voice_agent/`](voice_agent/README.md) is a separate, fully local English voice agent (LiveKit Agents 1.8.3 + NVIDIA NeMo-Speech.cpp with speaker diarization) that can use this server as its TTS. It has its own dependencies and is not part of the `vibevoice-api` package.
+
 
 ## License
 

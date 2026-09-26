@@ -1,0 +1,35 @@
+# NeMo-Speech.cpp riva_server config for Apple Silicon (Metal).
+#
+#   riva_server --config config/asr.mac.yaml --bind 127.0.0.1:50051
+#
+# Keys are documented in NeMo-Speech.cpp docs/asr/configuration.md. Unknown keys
+# are a hard error. The same file works on a Linux/CUDA server (gpu = CUDA index).
+asr:
+  backend:
+    gpu: 0                       # Metal device; -1 = CPU
+
+  model:
+    # nvidia/nemotron-speech-streaming-en-0.6b (Q8 GGUF). Pre-download with
+    # `nemo-speech pull nemotron-en`, or put an absolute .gguf path here.
+    path: nemotron-en
+
+  streaming:
+    rnnt_right_context: 1        # low-latency preset; -1 = model max (more accurate, more latency)
+
+  vad:
+    # Silero VAD GGUF (see README, one-off conversion). Masks non-speech before
+    # the encoder, which removes words hallucinated from noise.
+    # model_path: /absolute/path/to/silero-v6.2.0.gguf
+    masker:
+      mask_enable: false         # set true together with model_path
+
+  endpointing:
+    enable: true                 # required: LiveKit keeps one stream open and needs mid-stream finals
+    vad_based: false             # true once vad.model_path is set
+    stop_history_eou_ms: 700     # trailing silence that closes a final
+
+  diar:
+    # Streaming Sortformer v2 (4 speakers, CC-BY-4.0). Alternative:
+    # nemotron-3-diarization (V3, 8 speakers, 10 ms frames; preset v3-streaming).
+    model_path: sortformer
+    preset: streaming
