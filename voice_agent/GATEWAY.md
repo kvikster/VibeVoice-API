@@ -7,7 +7,7 @@ caller audio to `/stt`; LiveKit also sends overlap windows to `/bargein` when
 adaptive interruption is enabled.
 
 ```
-LiveKit agent -- raw PCM16/16k --> /stt gateway -- Voice Focus --> riva_server
+LiveKit agent -- raw PCM16/16k --> /stt gateway -- Voice Focus -- optional onset trim --> riva_server
                                   \-- Voice Focus VAD (full input stream)
               -- overlap windows --> /bargein gateway -- VAD score + policy
 ```
@@ -60,6 +60,39 @@ room/job headers have no correlated VAD score. If the enhancer returns raw audio
 an authorization/model failure, `/stt` reports an error instead of silently
 claiming enhanced recognition. `/health` checks only that the HTTP process is
 alive; it does not prove Riva or the SDK license is usable.
+
+### Experimental speech-onset trim for Nemotron 3.5
+
+`GATEWAY_STT_ONSET_TRIM=1` enables a server-side gate between Voice Focus and
+Riva on `/stt`. It inspects 20 ms frames of the audio Riva would receive, waits
+for two consecutive frames above −50 dBFS RMS, and sends those frames together
+with 160 ms of buffered audio before the detected onset. Earlier quiet frames
+are dropped. After the first onset, the continuous Riva stream receives every
+frame unchanged, including pauses. Transcript and word timestamps are shifted
+back to the original input clock by the skipped duration. The gateway logs
+whether onset was found and how many milliseconds were skipped. The feature is
+off by default; it does
+not change `/bargein` or the agent's local VAD.
+
+For a controlled run against the separate Nemotron 3.5 sidecar:
+
+```dotenv
+RIVA_SERVER=127.0.0.1:50052
+GATEWAY_STT_ONSET_TRIM=1
+# Defaults, if tuning on a labeled corpus:
+GATEWAY_STT_ONSET_THRESHOLD_DBFS=-50
+GATEWAY_STT_ONSET_PREROLL_MS=160
+```
+
+Equivalent CLI option: `--stt-onset-trim`; the threshold and pre-roll also have
+`--stt-onset-threshold-dbfs` and `--stt-onset-preroll-ms` options. A quiet
+caller below the threshold may never open the gate, while an early loud
+background sound can open it too soon. This energy detector is therefore an
+experiment, not a caller-identity classifier. Test missed first words, quiet
+callers, background-only audio, false starts, and recognition latency before
+using it on live calls. It is deliberately limited to initial silence:
+removing pauses inside a continuous stream would change timestamp and
+diarization context.
 
 ## LiveKit agent host
 

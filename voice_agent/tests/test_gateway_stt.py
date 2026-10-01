@@ -13,6 +13,7 @@ from livekit.agents import stt
 from local_voice_agent.bargein_server import BargeinServer
 from local_voice_agent.bargein_server.aic_vad import AicVadHub
 from local_voice_agent.bargein_server.stt_route import GatewaySTTRoute
+from local_voice_agent.bargein_server.speech_onset import SpeechOnsetTrim
 from local_voice_agent.gateway_stt import GatewaySTT
 from local_voice_agent.settings import Settings
 from local_voice_agent.stt import build_direct_stt, build_raw_stt, build_stt
@@ -44,6 +45,85 @@ def frame(amplitude: int = 3000) -> rtc.AudioFrame:
     return rtc.AudioFrame(
         data=pcm.tobytes(), sample_rate=16000, num_channels=1, samples_per_channel=320
     )
+
+
+def test_speech_onset_trims_silence_with_short_preroll() -> None:
+    onset = SpeechOnsetTrim()
+    for _ in range(35):
+        assert onset.push(frame(0)) == ()
+    assert onset.push(frame(4000)) == ()
+    released = onset.push(frame(4000))
+    assert len(released) == 10  # 160 ms lead-in plus two confirming frames
+    assert onset.skipped_frames == 27
+    assert onset.push(frame(0)) != ()  # Never trims silence inside the turn.
+
+
+def test_speech_onset_rejects_single_frame_noise_and_quiet_input() -> None:
+    onset = SpeechOnsetTrim()
+    assert onset.push(frame(4000)) == ()
+    for _ in range(20):
+        assert onset.push(frame(20)) == ()
+    assert not onset.started
+
+
+async def test_gateway_onset_trim_runs_after_enhancement_before_riva(riva):
+    fake, addr = riva
+
+    class Enhancer:
+        enabled = True
+
+        def _process(self, input_frame):
+            pcm = np.frombuffer(input_frame.data, dtype=np.int16)
+            out = frame(0 if int(pcm[0]) == 1000 else int(pcm[0]))
+            out.userdata["lk.aic-vad"] = True
+            return out
+
+    route = GatewaySTTRoute(
+        stt_factory=lambda: build_raw_stt(Settings(riva_server=addr)),
+        enhancer_factory=Enhancer,
+        onset_trim=True,
+    )
+    async with TestServer(BargeinServer(stt_route=route).app()) as ts:
+        asr = GatewaySTT(
+            url=str(ts.make_url("/stt")).replace("http://", "ws://"),
+            api_key=KEY,
+            api_secret=SECRET,
+        )
+        stream = asr.stream()
+        for _ in range(35):
+            stream.push_frame(frame(1000))
+        for _ in range(20):
+            stream.push_frame(frame(4000))
+        stream.end_input()
+        events = [event async for event in stream]
+        await stream.aclose()
+    assert 0.5 <= fake.received_s <= 0.6
+    assert fake.received_peak == 4000
+    final = next(
+        event for event in events if event.type == stt.SpeechEventType.FINAL_TRANSCRIPT
+    )
+    assert final.alternatives[0].words[0].start_time == pytest.approx(100.54)
+
+
+async def test_gateway_onset_trim_does_not_send_silent_audio_to_riva(riva):
+    fake, addr = riva
+    route = GatewaySTTRoute(
+        stt_factory=lambda: build_raw_stt(Settings(riva_server=addr)),
+        onset_trim=True,
+    )
+    async with TestServer(BargeinServer(stt_route=route).app()) as ts:
+        asr = GatewaySTT(
+            url=str(ts.make_url("/stt")).replace("http://", "ws://"),
+            api_key=KEY,
+            api_secret=SECRET,
+        )
+        stream = asr.stream()
+        for _ in range(100):
+            stream.push_frame(frame(0))
+        stream.end_input()
+        _ = [event async for event in stream]
+        await stream.aclose()
+    assert fake.received_s == 0
 
 
 async def test_gateway_preserves_streaming_events_speaker_and_eof(riva):

@@ -15,10 +15,12 @@ from livekit.agents import stt
 
 from ..gateway_wire import SAMPLE_RATE, WIRE_VERSION, event_to_wire
 from .aic_vad import AicVadHub, AicVadScorer
+from .speech_onset import SpeechOnsetTrim
 
 logger = logging.getLogger("local_voice_agent.gateway_stt")
 
 _FRAME_SAMPLES = 320  # 20 ms at 16 kHz; stable frame size for the enhancer
+_FRAME_SECONDS = _FRAME_SAMPLES / SAMPLE_RATE
 _MAX_MESSAGE_BYTES = SAMPLE_RATE * 2  # at most one second per WebSocket message
 
 
@@ -30,12 +32,18 @@ class GatewaySTTRoute:
         enhancer_factory: Callable[[], object] | None = None,
         vad_factory: Callable[[], AicVadScorer] | None = None,
         vad_hub: AicVadHub | None = None,
+        onset_trim: bool = False,
+        onset_threshold_dbfs: float = -50.0,
+        onset_preroll_ms: int = 160,
         drain_timeout_s: float = 15.0,
     ) -> None:
         self._stt_factory = stt_factory
         self._enhancer_factory = enhancer_factory
         self._vad_factory = vad_factory
         self._vad_hub = vad_hub
+        self._onset_trim = onset_trim
+        self._onset_threshold_dbfs = onset_threshold_dbfs
+        self._onset_preroll_ms = onset_preroll_ms
         self._drain_timeout_s = drain_timeout_s
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
@@ -46,6 +54,7 @@ class GatewaySTTRoute:
         enhancer = None
         vad_scorer: AicVadScorer | None = None
         vad_lease = None
+        onset = None
         output_task: asyncio.Task | None = None
         pending = bytearray()
         ended = False
@@ -68,12 +77,22 @@ class GatewaySTTRoute:
             enhancer = self._enhancer_factory() if self._enhancer_factory else None
             vad_scorer = self._vad_factory() if self._vad_factory else None
             vad_lease = self._vad_hub.start(request.headers) if self._vad_hub else None
+            if self._onset_trim:
+                onset = SpeechOnsetTrim(
+                    threshold_dbfs=self._onset_threshold_dbfs,
+                    preroll_ms=self._onset_preroll_ms,
+                )
             stream = backend.stream()
 
             async def forward_events() -> None:
                 assert stream is not None
                 async for event in stream:
-                    await ws.send_json(event_to_wire(event))
+                    offset_s = (
+                        onset.skipped_frames * _FRAME_SECONDS
+                        if onset is not None
+                        else 0.0
+                    )
+                    await ws.send_json(event_to_wire(event, time_offset_s=offset_s))
 
             output_task = asyncio.create_task(forward_events())
             await ws.send_json(
@@ -90,7 +109,7 @@ class GatewaySTTRoute:
                         chunk = bytes(pending[: _FRAME_SAMPLES * 2])
                         del pending[: _FRAME_SAMPLES * 2]
                         vad_scorer = self._push(
-                            stream, enhancer, chunk, vad_scorer, vad_lease
+                            stream, enhancer, chunk, vad_scorer, vad_lease, onset
                         )
                 elif message.type == WSMsgType.TEXT:
                     if message.json() != {"type": "end"}:
@@ -98,10 +117,16 @@ class GatewaySTTRoute:
                     if pending:
                         chunk = bytes(pending).ljust(_FRAME_SAMPLES * 2, b"\0")
                         vad_scorer = self._push(
-                            stream, enhancer, chunk, vad_scorer, vad_lease
+                            stream, enhancer, chunk, vad_scorer, vad_lease, onset
                         )
                         pending.clear()
                     stream.end_input()
+                    if onset is not None:
+                        logger.info(
+                            "STT speech onset trim: started=%s skipped_ms=%d",
+                            onset.started,
+                            round(onset.skipped_frames * _FRAME_SECONDS * 1000),
+                        )
                     ended = True
                     await asyncio.wait_for(output_task, self._drain_timeout_s)
                     await ws.send_json({"type": "end"})
@@ -136,6 +161,7 @@ class GatewaySTTRoute:
         chunk: bytes,
         vad_scorer: AicVadScorer | None,
         vad_lease: tuple[tuple[str, str], object] | None,
+        onset: SpeechOnsetTrim | None,
     ) -> AicVadScorer | None:
         frame = rtc.AudioFrame(
             data=chunk,
@@ -164,5 +190,6 @@ class GatewaySTTRoute:
             # enhanced audio and continue the ASR comparison.
             if not enhancer.enabled or "lk.aic-vad" not in frame.userdata:
                 raise RuntimeError("ai-coustics enhancement unavailable")
-        stream.push_frame(frame)
+        for output_frame in onset.push(frame) if onset is not None else (frame,):
+            stream.push_frame(output_frame)
         return vad_scorer

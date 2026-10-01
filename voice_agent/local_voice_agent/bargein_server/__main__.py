@@ -52,6 +52,22 @@ def main() -> None:
         else None,
         help="experimental foreground VAD gate; omitted keeps VAD in shadow mode",
     )
+    p.add_argument(
+        "--stt-onset-trim",
+        action="store_true",
+        default=os.environ.get("GATEWAY_STT_ONSET_TRIM") == "1",
+        help="experimental: trim leading quiet frames after enhancement, before Riva",
+    )
+    p.add_argument(
+        "--stt-onset-threshold-dbfs",
+        type=float,
+        default=float(os.environ.get("GATEWAY_STT_ONSET_THRESHOLD_DBFS", "-50")),
+    )
+    p.add_argument(
+        "--stt-onset-preroll-ms",
+        type=int,
+        default=int(os.environ.get("GATEWAY_STT_ONSET_PREROLL_MS", "160")),
+    )
     p.add_argument("--maai-device", default=os.environ.get("MAAI_DEVICE", "cpu"))
     p.add_argument(
         "--threshold",
@@ -97,6 +113,13 @@ def main() -> None:
         p.error("--aic-vad-gate-threshold must be between 0 and 1")
     from ..settings import Settings
 
+    if args.stt_onset_trim and not args.gateway_stt:
+        p.error("--stt-onset-trim requires --gateway-stt")
+    if not -90 <= args.stt_onset_threshold_dbfs <= -10:
+        p.error("--stt-onset-threshold-dbfs must be between -90 and -10")
+    if not 0 <= args.stt_onset_preroll_ms <= 500 or args.stt_onset_preroll_ms % 20:
+        p.error("--stt-onset-preroll-ms must be 0-500 in 20 ms steps")
+
     gateway_settings = Settings()
 
     aic_vad_factory = None
@@ -135,6 +158,9 @@ def main() -> None:
             enhancer_factory=enhancer_factory,
             vad_factory=aic_vad_factory,
             vad_hub=vad_hub,
+            onset_trim=args.stt_onset_trim,
+            onset_threshold_dbfs=args.stt_onset_threshold_dbfs,
+            onset_preroll_ms=args.stt_onset_preroll_ms,
         )
 
     maai_factory = None

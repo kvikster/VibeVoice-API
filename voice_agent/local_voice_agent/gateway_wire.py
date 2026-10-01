@@ -10,7 +10,7 @@ WIRE_VERSION = 1
 SAMPLE_RATE = 16000
 
 
-def event_to_wire(event: stt.SpeechEvent) -> dict:
+def event_to_wire(event: stt.SpeechEvent, *, time_offset_s: float = 0.0) -> dict:
     alternatives = []
     for item in event.alternatives:
         words = None
@@ -26,14 +26,18 @@ def event_to_wire(event: stt.SpeechEvent) -> dict:
                 ):
                     field = getattr(word, name)
                     if is_given(field):
-                        value[name] = field
+                        value[name] = (
+                            field + time_offset_s
+                            if name in ("start_time", "end_time", "start_time_offset")
+                            else field
+                        )
                 words.append(value)
         alternatives.append(
             {
                 "language": str(item.language),
                 "text": item.text,
-                "start_time": item.start_time,
-                "end_time": item.end_time,
+                "start_time": item.start_time + time_offset_s,
+                "end_time": item.end_time + time_offset_s,
                 "confidence": item.confidence,
                 "speaker_id": item.speaker_id,
                 "is_primary_speaker": item.is_primary_speaker,

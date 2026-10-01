@@ -95,6 +95,22 @@ window was narrow (around 0.65–0.80 s into the 8-second WAV); cutting later
 also lost the words. A server-side VAD restart must therefore retain the
 speech onset accurately and be tested on the full corpus before use.
 
+An opt-in `/stt` speech-onset trim now buffers 20 ms frames after optional
+Voice Focus enhancement. With a −50 dBFS RMS threshold, two-frame confirmation,
+and 160 ms pre-roll, real-time Riva replay of the two original WAVs on the
+3.5 sidecar changed from **no final event** to “Uh yeah, tell me” (`11100418`)
+and “Yeah yeah tell me” (`474a0f17`), both with speaker `S1`. This validates a
+remedy for these two excerpts; it does not establish a safe threshold or
+pre-roll for other calls. The feature remains disabled by default.
+With Voice Focus enabled on the server before the same trim, the two final
+texts were “Uh yeah tell me” and “Yeah yeah tell me.” The other three original
+excerpts were also replayed through the raw-audio trim: `4e42b620` produced
+“Yeah hello Ahmed how do you do”; `7eaff530` produced “Yeah” followed by
+“tell me tell me please”; `83d6e9d7` produced “Evaquation” followed by
+“does this cost anything.” Those are model outputs, not verified ground truth.
+The follow-up still needs quiet-caller and background-only negatives, timing
+measurement, and a larger labeled corpus before enabling live traffic.
+
 Reproduction artifacts are in `short-turn-probes/`, `silence-axis-probes/`,
 `lead-threshold-probes/`, `context-probes/`, `full-start-probes/`, and
 `native-transformers-results.json` under the evaluation directory above.
