@@ -14,8 +14,10 @@ diarization enabled. The LiveKit path was
 small, selected sample the 3.5 model returned no text for two short caller
 phrases that the existing model recognized, both before and after ai-coustics
 Voice Focus. The omitted phrases also remained empty with CPU decoding, offline
-decoding, and maximum streaming right context in the new CLI. This is a result
-for the tested Q8 GGUF/runtime/settings, not a general ranking of the models.
+decoding, and every supported streaming right context tested in the new CLI.
+The follow-up below reproduced the omission with NVIDIA's original unquantized
+checkpoint in Transformers. This is a result for these short English turns, not
+a general ranking of the models.
 
 The 3.5 model remains a candidate for multilingual calls. NVIDIA's model card
 recommends the existing English-only model for English-only use:
@@ -44,6 +46,58 @@ well. Complete CLI results are in `five-streaming/summary.json` and the
 per-model JSON files; the `.aic.wav` files and `.aic.json` outputs hold the
 enhanced pair. The license key is only read locally at runtime and is absent
 from this report and the outputs.
+
+## Why the two short turns disappeared
+
+The in-call Deepgram transcript also recorded `11100418` as “Yeah. Tell me.”
+and `474a0f17` as “Yeah. Yeah. Tell me.” Their customer PCM tracks contain
+roughly 1–1.5 seconds of speech, starting about 0.75 seconds into the trial
+WAVs. Peak levels are −18.3 and −14.4 dBFS respectively; the WAVs are not
+silent or clipped. The English-only model recognizes both.
+
+We kept the **identical 0.75–2.50 s speech samples** from each trial WAV and
+changed only zero-valued PCM padding. The following outcome repeated for both
+calls with `en-US`:
+
+| Silence before speech | Silence after speech | Nemotron 3.5 GGUF | Original NVIDIA safetensors in Transformers |
+| ---: | ---: | --- | --- |
+| 0 ms | 1.5 s | recognized | recognized |
+| 0 ms | 5.5 s | recognized | recognized |
+| 250 ms | 1.5 s | empty | empty |
+| 750 ms | 1.5 s | empty | empty |
+
+The old English GGUF recognized both phrases with 0, 240, and 750 ms of
+leading silence. A finer 40–750 ms sweep showed that the 3.5 output can be
+correct, garbled, or empty depending on the speech position; it is especially
+fragile for these short turns. Adding +6/+12 dB, Voice Focus, CPU instead of
+Metal, or changing the supported streaming right context (`0`, `1`, `3`, `6`,
+`13`) did not reliably restore the two original WAVs. Long **trailing** silence
+was not the cause: with speech at stream start, 5.5 s of trailing silence still
+produced text.
+
+The original unquantized checkpoint was tested with `transformers==5.18.0`,
+`torch==2.14.1`, and NVIDIA's documented `AutoProcessor` / `AutoModelForRNNT`
+`generate()` path on Apple MPS. For each original WAV it produced exactly 102
+RNNT tokens, all the model's blank ID `13087`, so there were no lexical tokens
+for a later layer to hide. Removing leading silence yielded text in the same
+runtime. This places the failure **inside the model inference path** for these
+inputs. It rules out a GGUF-only quantization/conversion defect and the Riva,
+Sortformer, LiveKit, and ai-coustics postprocessing layers as the sole cause.
+The data do not identify which learned component or training choice creates
+this onset sensitivity.
+
+Full `customer-original` audio from call start through 40 seconds confirmed
+this is not an artifact of the 8-second trial crop: 3.5 omitted the first
+short answer in both calls, then recognized later longer caller speech.
+Conversely, real-time Riva replay on speech-aligned crops yielded raw and
+post-adapter final transcripts for both phrases. The available crop-start
+window was narrow (around 0.65–0.80 s into the 8-second WAV); cutting later
+also lost the words. A server-side VAD restart must therefore retain the
+speech onset accurately and be tested on the full corpus before use.
+
+Reproduction artifacts are in `short-turn-probes/`, `silence-axis-probes/`,
+`lead-threshold-probes/`, `context-probes/`, `full-start-probes/`, and
+`native-transformers-results.json` under the evaluation directory above.
 
 ## Real-time LiveKit/Riva replay
 
@@ -79,6 +133,10 @@ not a model latency benchmark.
   --language en-US --format json`; paired runs changed only `MODEL` and input
   WAV. CPU, offline, and right-context checks used the new CLI for the two
   empty clips.
+- Native Transformers comparison used the original `model.safetensors` from
+  the same pinned Hugging Face revision and `probe_native_transformers.py` in
+  the evaluation directory. The synthetic padding tests used exact copies of
+  speech PCM samples, so the comparison changes only their position in time.
 
 ## Next acceptance gate
 
@@ -89,3 +147,6 @@ without Voice Focus, then compare missed caller turns, WER, speaker attribution,
 first interim/final latency, and interruption decisions. Include a Linux/CUDA
 run before making a server deployment claim. Until those gates pass, keep 3.5
 as a separate opt-in endpoint and keep the existing English server as default.
+If testing a VAD-gated 3.5 stream, score both missed first words and accidental
+background-triggered streams, because simply trimming silence by a fixed
+amount fails on these two calls.
